@@ -2,7 +2,8 @@
 
 ## 📍 Phase 1: Cloud Deployment (Current Priority)
 - [ ] **Domain Setup**: Point `justright.51winwin.com` to `8.159.153.134`.
-- [ ] **Nginx Reverse Proxy**: Handle SSL (HTTPS) and route traffic to the Node.js backend on port 3001.
+- [ ] **Nginx Reverse Proxy**: Set up Nginx as configured in `docs/deployment_guide.md`.
+- [ ] **SSL (Let's Encrypt)**: **Mandatory** - Use Let's Encrypt via Certbot for HTTPS signing.
 - [ ] **PM2 Persistence**: Ensure the backend server stays alive 24/7.
 - [ ] **Environment Variables**: Move API URLs to `.env` files.
 

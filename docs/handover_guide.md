@@ -22,6 +22,7 @@ This project is currently in a transition phase from "Development" to "Deploymen
 1.  **Server Deployment**: 
     - The code is ready for 8.159.153.134.
     - Needs Nginx configuration for `justright.51winwin.com`.
+    - **SSL/HTTPS**: Must use **Let's Encrypt** via Certbot for certificate signing.
     - Backend should be managed by PM2.
 2.  **API URL Dynamic Handling**: Currently, the code in `useEventsSQLite.ts` needs a way to detect production vs. development to switch between `localhost:3001` and the production URL.
 3.  **Authentication**: Currently, "Identity Portal" is used for switching profiles. A proper login/security layer might be needed later as part of the broader "AI Marketing System".
