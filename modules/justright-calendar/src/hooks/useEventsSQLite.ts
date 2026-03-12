@@ -15,7 +15,15 @@ export const useEventsSQLite = () => {
   // Check if server is reachable
   const checkServer = useCallback(async () => {
     try {
-      const resp = await fetch(`${API_BASE_URL}/health`, { signal: AbortSignal.timeout(2000) });
+      // 使用更具兼容性的 fetch 方式，避免部分移动端浏览器不持支 AbortSignal.timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      
+      const resp = await fetch(`${API_BASE_URL}/health`, { 
+        signal: controller.signal 
+      });
+      clearTimeout(timeoutId);
+      
       const available = resp.ok;
       setIsServerAvailable(available);
       return available;
