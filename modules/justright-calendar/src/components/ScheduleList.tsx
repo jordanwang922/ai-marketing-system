@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, max, min } from 'date-fns';
 import { Calendar, ListTodo } from 'lucide-react';
-import type { User, CalendarEvent } from '@/types';
+import type { User } from '@/types';
 import { useTranslation } from '@/hooks/useLanguage';
 import { useUser } from '@/hooks/useUser';
 import { useEventsUnified } from '@/hooks/useEventsUnified';
@@ -48,7 +48,7 @@ export const ScheduleList = ({ isOpen, onClose, currentDate, currentUser }: Sche
       if (overlapStart <= overlapEnd) {
         // 使用 eachDayOfInterval 生成每一天的记录
         const days = eachDayOfInterval({ start: overlapStart, end: overlapEnd });
-        days.forEach((day, index) => {
+        days.forEach((day) => {
           list.push({
             ...event,
             displayDate: day,
