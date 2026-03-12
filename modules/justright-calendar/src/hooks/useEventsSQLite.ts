@@ -2,7 +2,9 @@ import { useState, useEffect, useCallback } from 'react';
 import type { CalendarEvent } from '@/types';
 import { v4 as uuidv4 } from 'uuid';
 
-const API_BASE_URL = 'http://localhost:3001/api';
+const API_BASE_URL = import.meta.env.PROD 
+  ? 'https://justright.51winwin.com/api' 
+  : 'http://localhost:3001/api';
 
 export const useEventsSQLite = () => {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
