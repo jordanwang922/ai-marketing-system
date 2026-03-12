@@ -1,0 +1,255 @@
+/* 全局样式 */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 自定义滚动条 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+/* 选中文字样式 */
+::selection {
+  background-color: rgba(127, 86, 217, 0.2);
+  color: inherit;
+}
+
+/* 焦点样式 */
+:focus-visible {
+  outline: 2px solid #7F56D9;
+  outline-offset: 2px;
+}
+
+/* 移动端优化 */
+@media (max-width: 640px) {
+  .calendar-cell {
+    min-height: 80px !important;
+    padding: 4px !important;
+  }
+  
+  .calendar-cell .text-sm {
+    font-size: 0.75rem;
+  }
+  
+  .calendar-cell .w-7 {
+    width: 1.5rem;
+    height: 1.5rem;
+    font-size: 0.75rem;
+  }
+}
+
+/* 动画 */
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(127, 86, 217, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(127, 86, 217, 0);
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s infinite;
+}
+
+/* 玻璃拟态效果 */
+.glass {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* 渐变文字 */
+.gradient-text {
+  background: linear-gradient(135deg, #7F56D9 0%, #17B26A 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* 卡片悬停效果 */
+.card-hover {
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.card-hover:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.15);
+}
+
+/* 按钮涟漪效果 */
+.btn-ripple {
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-ripple::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  transition: width 0.3s, height 0.3s;
+}
+
+.btn-ripple:active::after {
+  width: 200%;
+  height: 200%;
+}
+
+/* 输入框焦点效果 */
+.input-focus {
+  transition: all 0.3s ease;
+  border: 2px solid transparent;
+}
+
+.input-focus:focus {
+  border-color: #7F56D9;
+  box-shadow: 0 0 0 4px rgba(127, 86, 217, 0.1);
+}
+
+/* 事件条带动画 */
+.event-bar {
+  transition: all 0.2s ease;
+}
+
+.event-bar:hover {
+  transform: scaleX(1.02);
+  filter: brightness(1.1);
+}
+
+/* 日期单元格动画 */
+.date-cell {
+  transition: all 0.2s ease;
+}
+
+.date-cell:hover {
+  background-color: rgba(127, 86, 217, 0.05);
+}
+
+/* 模态框动画 */
+.modal-enter {
+  animation: modalEnter 0.3s ease-out;
+}
+
+@keyframes modalEnter {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 侧边栏动画 */
+.sidebar-enter {
+  animation: sidebarEnter 0.3s ease-out;
+}
+
+@keyframes sidebarEnter {
+  from {
+    opacity: 0;
+    transform: translateX(-100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* 响应式工具类 */
+@media (max-width: 1024px) {
+  .hide-mobile {
+    display: none !important;
+  }
+}
+
+@media (min-width: 1025px) {
+  .hide-desktop {
+    display: none !important;
+  }
+}
+
+/* 触摸设备优化 */
+@media (pointer: coarse) {
+  .hover-effect {
+    display: none;
+  }
+}
+
+/* 打印样式 */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  
+  body {
+    background: white !important;
+  }
+}
+
+/* iOS Safari 特定修复 */
+@supports (-webkit-touch-callout: none) {
+  /* iOS 设备上的样式 */
+  input[type="date"],
+  input[type="time"] {
+    -webkit-appearance: none;
+    appearance: none;
+    min-height: 44px;
+    font-size: 16px; /* 防止 iOS 缩放 */
+  }
+  
+  /* 确保输入框有足够间距 */
+  .grid-cols-2 > div {
+    padding-right: 4px;
+  }
+  
+  .grid-cols-2 > div:last-child {
+    padding-right: 0;
+    padding-left: 4px;
+  }
+}
+
+/* 小屏幕设备上的模态框优化 */
+@media (max-width: 380px) {
+  .grid-cols-2 {
+    gap: 0.5rem !important;
+  }
+  
+  .grid-cols-2 input {
+    padding-left: 0.5rem !important;
+    padding-right: 0.5rem !important;
+  }
+}
