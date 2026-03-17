@@ -1,0 +1,13 @@
+{
+  "name": "crm-workers",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node src/index.js"
+  },
+  "dependencies": {
+    "bullmq": "^5.52.3",
+    "ioredis": "^5.4.1"
+  }
+}

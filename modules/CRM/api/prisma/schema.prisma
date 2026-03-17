@@ -1,0 +1,185 @@
+// MVP schema (subject to change)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Brand {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  users     User[]
+  teams     Team[]
+  leads     Lead[]
+  experts   Expert[]
+  consultingCases ConsultingCase[]
+  notifications Notification[]
+  auditLogs AuditLog[]
+  leadActivities LeadActivity[]
+  positions Position[]
+}
+
+model Team {
+  id        String   @id @default(cuid())
+  name      String
+  brandId   String
+  leaderId  String?
+  brand     Brand    @relation(fields: [brandId], references: [id])
+  leader    User?    @relation("TeamLeader", fields: [leaderId], references: [id])
+  users     User[]
+  createdAt DateTime @default(now())
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  role      String
+  title     String?
+  managerId String?
+  passwordHash String?
+  brandId   String
+  teamId    String?
+  positionId String?
+  brand     Brand    @relation(fields: [brandId], references: [id])
+  team      Team?    @relation(fields: [teamId], references: [id])
+  manager   User?    @relation("UserManager", fields: [managerId], references: [id])
+  reports   User[]   @relation("UserManager")
+  leads     Lead[]   @relation("LeadOwner")
+  notifications Notification[]
+  auditLogs AuditLog[] @relation("AuditActor")
+  leadActivities LeadActivity[]
+  leadTeams Team[]   @relation("TeamLeader")
+  position  Position? @relation(fields: [positionId], references: [id])
+  createdAt DateTime @default(now())
+}
+
+model Lead {
+  id        String   @id @default(cuid())
+  brandId   String
+  ownerId   String?
+  companyName String
+  companyNameEn String?
+  dedupeKey String
+  name      String?
+  email     String?
+  phone     String?
+  notes     String?
+  status    String   @default("New")
+  contractAmount Float?
+  score     Int?
+  aiSummary String?
+  aiNotes   String?
+  aiStatus  String?
+  aiRequestedAt DateTime?
+  aiEvaluatedAt DateTime?
+  lastActivityAt DateTime?
+  isMerged  Boolean  @default(false)
+  mergedIntoId String?
+  mergedAt  DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  brand     Brand    @relation(fields: [brandId], references: [id])
+  owner     User?    @relation("LeadOwner", fields: [ownerId], references: [id])
+  consultingCases ConsultingCase[]
+  activities LeadActivity[]
+}
+
+model Expert {
+  id        String   @id @default(cuid())
+  brandId   String
+  name      String
+  country   String?
+  background String?
+  specialties String?
+  pricing   String?
+  pricingCurrency String?
+  pricingUnit String?
+  contactEmail String?
+  phone     String?
+  notes     String?
+  createdAt DateTime @default(now())
+
+  brand     Brand    @relation(fields: [brandId], references: [id])
+  consultingCases ConsultingCase[]
+}
+
+model Position {
+  id        String   @id @default(cuid())
+  brandId   String
+  name      String
+  level     Int?
+  createdAt DateTime @default(now())
+
+  brand     Brand    @relation(fields: [brandId], references: [id])
+  users     User[]
+}
+
+model ConsultingCase {
+  id        String   @id @default(cuid())
+  brandId   String
+  leadId    String
+  expertId  String?
+  status    String   @default("New")
+  channel   String   @default("Email")
+  price     Float?
+  currency  String?
+  requirements String?
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  brand     Brand    @relation(fields: [brandId], references: [id])
+  lead      Lead     @relation(fields: [leadId], references: [id])
+  expert    Expert?  @relation(fields: [expertId], references: [id])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  brandId   String
+  userId    String
+  channel   String   @default("InApp")
+  title     String
+  body      String
+  status    String   @default("New")
+  createdAt DateTime @default(now())
+
+  brand     Brand    @relation(fields: [brandId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  brandId   String
+  actorId   String?
+  action    String
+  entity    String
+  entityId  String?
+  payload   Json?
+  createdAt DateTime @default(now())
+
+  brand     Brand    @relation(fields: [brandId], references: [id])
+  actor     User?    @relation("AuditActor", fields: [actorId], references: [id])
+}
+
+model LeadActivity {
+  id        String   @id @default(cuid())
+  brandId   String
+  leadId    String
+  actorId   String
+  type      String
+  title     String
+  notes     String?
+  occurredAt DateTime
+  createdAt DateTime @default(now())
+
+  lead      Lead     @relation(fields: [leadId], references: [id])
+  actor     User     @relation(fields: [actorId], references: [id])
+  brand     Brand    @relation(fields: [brandId], references: [id])
+}
