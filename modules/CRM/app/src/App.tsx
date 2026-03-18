@@ -747,6 +747,7 @@ export default function App() {
   }, [filteredLeads]);
 
   const unassignedLeads = sortedLeads.filter((lead) => !lead.ownerId);
+  const assignedLeads = sortedLeads.filter((lead) => lead.ownerId);
   const myLeads = currentUserId ? sortedLeads.filter((lead) => lead.ownerId === currentUserId) : [];
   const teamLeads = isManager
     ? sortedLeads.filter((lead) => (lead.ownerId ? teamUserIds.has(lead.ownerId) : false))
@@ -969,13 +970,13 @@ export default function App() {
                 <div className="rounded-3xl border border-border bg-card p-6">
                   <h2 className="text-lg font-semibold">{t("leads.list")}</h2>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {t("leads.count")} {sortedLeads.length}
+                    {t("leads.count")} {assignedLeads.length}
                   </p>
                   <div className="mt-3">
                     <Input label={t("fields.search")} value={leadFilter} onChange={setLeadFilter} />
                   </div>
                   <ul className="mt-4 space-y-3">
-                    {sortedLeads.map((lead) => (
+                    {assignedLeads.map((lead) => (
                       <li key={lead.id} className="rounded-2xl border border-border/80 p-4">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div>
