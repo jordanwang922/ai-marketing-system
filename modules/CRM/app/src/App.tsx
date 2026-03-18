@@ -239,6 +239,9 @@ const messages = {
       list: "通知列表",
       markRead: "标记已读",
       leadForm: "客户填表",
+      targetType: "发送范围",
+      targetUser: "接收用户",
+      targetGroup: "分支节点",
     },
     fields: {
       search: "搜索",
@@ -268,6 +271,9 @@ const messages = {
       actorId: "操作人ID",
       payload: "请求内容",
       body: "内容",
+      targetType: "发送范围",
+      targetUser: "接收用户",
+      targetGroup: "分支节点",
       score: "评分 (0-100)",
       summary: "评估摘要",
       country: "国家",
@@ -313,6 +319,7 @@ const messages = {
       createPosition: "新增职级",
       show: "显示",
       hide: "隐藏",
+      all: "所有人",
     },
     sections: {
       myLeads: "我的线索",
@@ -468,6 +475,9 @@ const messages = {
       list: "Notification List",
       markRead: "Mark Read",
       leadForm: "Lead Intake Form",
+      targetType: "Target Type",
+      targetUser: "Recipient",
+      targetGroup: "Group Node",
     },
     fields: {
       search: "Search",
@@ -497,6 +507,9 @@ const messages = {
       actorId: "Actor ID",
       payload: "Payload (JSON)",
       body: "Body",
+      targetType: "Target Type",
+      targetUser: "Recipient",
+      targetGroup: "Group Node",
       score: "Score (0-100)",
       summary: "Summary",
       country: "Country",
@@ -542,6 +555,7 @@ const messages = {
       createPosition: "Create Position",
       show: "Show",
       hide: "Hide",
+      all: "All",
     },
     sections: {
       myLeads: "My Leads",
@@ -2119,7 +2133,7 @@ export default function App() {
               {isManager && (
                 <div className="rounded-3xl border border-border bg-card p-6">
                   <h2 className="text-lg font-semibold">{t("notifications.create")}</h2>
-                  <NotificationForm brandId={brandId} onCreated={refreshAll} t={t} token={authToken} />
+                  <NotificationForm brandId={brandId} onCreated={refreshAll} t={t} token={authToken} users={users} />
                 </div>
               )}
               <div className="rounded-3xl border border-border bg-card p-6">
@@ -3251,13 +3265,16 @@ function NotificationForm({
   onCreated,
   t,
   token,
+  users,
 }: {
   brandId: string;
   onCreated: () => void;
   t: (key: string) => string;
   token: string;
+  users: User[];
 }) {
-  const [userId, setUserId] = useState("");
+  const [targetType, setTargetType] = useState<"user" | "group" | "all">("user");
+  const [targetUserId, setTargetUserId] = useState("");
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [channel, setChannel] = useState("InApp");
@@ -3265,20 +3282,60 @@ function NotificationForm({
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!brandId) return;
-    await apiPost("/notifications", { userId, title, body, channel }, token);
-    setUserId("");
+    await apiPost(
+      "/notifications",
+      {
+        targetType,
+        targetUserId: targetType === "all" ? undefined : targetUserId || undefined,
+        title,
+        body,
+        channel,
+      },
+      token
+    );
+    setTargetUserId("");
+    setTargetType("user");
     setTitle("");
     setBody("");
     onCreated();
   }
 
+  const targetOptions = [
+    { value: "user", label: t("notifications.targetUser") },
+    { value: "group", label: t("notifications.targetGroup") },
+    { value: "all", label: t("buttons.all") },
+  ];
+
+  const userOptions = users.map((user) => ({
+    value: user.id,
+    label: `${user.name}${user.title ? ` · ${user.title}` : ""}`,
+  }));
+
+  const requiresUser = targetType !== "all";
+
   return (
     <form onSubmit={handleSubmit} className="mt-4 space-y-3 text-sm">
-      <Input label={t("fields.userId")} value={userId} onChange={setUserId} required />
+      <Select
+        label={t("notifications.targetType")}
+        value={targetType}
+        onChange={(value) => setTargetType(value as "user" | "group" | "all")}
+        options={targetOptions}
+      />
+      {requiresUser && (
+        <Select
+          label={targetType === "group" ? t("notifications.targetGroup") : t("notifications.targetUser")}
+          value={targetUserId}
+          onChange={setTargetUserId}
+          options={userOptions}
+        />
+      )}
       <Input label={t("fields.title")} value={title} onChange={setTitle} required />
       <TextArea label={t("fields.body")} value={body} onChange={setBody} rows={4} />
       <Input label={t("fields.channel")} value={channel} onChange={setChannel} />
-      <SubmitButton disabled={!brandId || !userId || !title || !body} label={t("buttons.sendNotification")} />
+      <SubmitButton
+        disabled={!brandId || !title || !body || (requiresUser && !targetUserId)}
+        label={t("buttons.sendNotification")}
+      />
     </form>
   );
 }
