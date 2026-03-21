@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException, UnauthorizedExcepti
 import { PrismaService } from "../prisma.service";
 import { AiEvalDto } from "./dto/ai-eval.dto";
 import { getSubordinateIds } from "../common/hierarchy.util";
+import { RiskRadarService } from "../riskradar/riskradar.service";
 
 function normalizeCompanyName(name: string) {
   return name
@@ -20,7 +21,7 @@ type AuthUser = {
 
 @Injectable()
 export class LeadsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly riskradar: RiskRadarService) {}
 
   private async getHierarchyUserIds(user: AuthUser) {
     const subordinates = await getSubordinateIds(this.prisma, user.brandId, user.id);
@@ -177,13 +178,65 @@ export class LeadsService {
     });
   }
 
-  async aiEvalStart(id: string, user: AuthUser) {
-    await this.ensureLeadAccess(id, user);
+  async aiEvalStart(id: string, payload: { mode?: string; country?: string; locale?: string }, user: AuthUser) {
+    const lead = await this.ensureLeadAccess(id, user);
+    const mode = payload.mode || "quick";
+    const country = payload.country || "中国";
+    const locale = payload.locale || "zh-CN";
+
+    const result = await this.riskradar.evaluate({
+      company_name: lead.companyName,
+      country,
+      mode,
+      locale,
+      user_id: user.id,
+      tenant_id: user.brandId,
+      client_ref: lead.id,
+    });
+
+    if (result?.cached && result?.report) {
+      return this.prisma.lead.update({
+        where: { id },
+        data: {
+          aiStatus: "completed",
+          aiEvaluatedAt: new Date(),
+          aiRequestedAt: new Date(),
+          aiSummary: result.report.summary ?? null,
+          aiNotes: JSON.stringify(result.report),
+          score: Number(result.report.confidence_score ?? 0),
+          aiMode: mode,
+          aiTaskId: result.task_id ?? null,
+        },
+      });
+    }
+
     return this.prisma.lead.update({
       where: { id },
       data: {
         aiStatus: "pending",
         aiRequestedAt: new Date(),
+        aiMode: mode,
+        aiTaskId: result.task_id ?? null,
+      },
+    });
+  }
+
+  async applyRiskRadarResult(payload: { taskId?: string; report?: any; mode?: string; userId?: string }) {
+    if (!payload.taskId) return null;
+    const lead = await this.prisma.lead.findFirst({ where: { aiTaskId: payload.taskId } });
+    if (!lead) return null;
+
+    const report = payload.report || {};
+    const score = Number(report.confidence_score ?? 0);
+    return this.prisma.lead.update({
+      where: { id: lead.id },
+      data: {
+        aiStatus: "completed",
+        aiEvaluatedAt: new Date(),
+        aiSummary: report.summary ?? lead.aiSummary ?? null,
+        aiNotes: JSON.stringify(report),
+        score: Number.isFinite(score) ? score : lead.score ?? null,
+        aiMode: payload.mode ?? lead.aiMode ?? null,
       },
     });
   }

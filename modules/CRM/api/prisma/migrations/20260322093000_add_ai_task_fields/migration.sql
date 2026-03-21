@@ -1,0 +1,2 @@
+ALTER TABLE "Lead" ADD COLUMN "aiTaskId" TEXT;
+ALTER TABLE "Lead" ADD COLUMN "aiMode" TEXT;

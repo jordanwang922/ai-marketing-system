@@ -13,6 +13,7 @@ import { NotificationsModule } from "./notifications/notifications.module";
 import { AuthModule } from "./auth/auth.module";
 import { JwtAuthGuard } from "./auth/jwt-auth.guard";
 import { PositionsModule } from "./positions/positions.module";
+import { RiskRadarModule } from "./riskradar/riskradar.module";
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { PositionsModule } from "./positions/positions.module";
     NotificationsModule,
     AuthModule,
     PositionsModule,
+    RiskRadarModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: JwtAuthGuard }],

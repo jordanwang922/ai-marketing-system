@@ -40,6 +40,7 @@ function routes({ db }) {
       user_id: userId,
       tenant_id: tenantId,
       force_refresh: forceRefresh = false,
+      client_ref: clientRef,
     } = req.body || {};
 
     if (!companyName) {
@@ -74,6 +75,7 @@ function routes({ db }) {
       locale,
       userId,
       tenantId,
+      clientRef,
     });
 
     return res.json({

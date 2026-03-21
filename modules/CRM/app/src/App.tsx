@@ -695,6 +695,14 @@ export default function App() {
     contractAmount: string;
   } | null>(null);
   const [aiModalLead, setAiModalLead] = useState<Lead | null>(null);
+  const [riskCompany, setRiskCompany] = useState("");
+  const [riskCountry, setRiskCountry] = useState("中国");
+  const [riskMode, setRiskMode] = useState("quick");
+  const [riskLocale, setRiskLocale] = useState("zh-CN");
+  const [riskTaskId, setRiskTaskId] = useState<string | null>(null);
+  const [riskStatus, setRiskStatus] = useState<string | null>(null);
+  const [riskReport, setRiskReport] = useState<any>(null);
+  const [riskError, setRiskError] = useState<string | null>(null);
   const [showLeadIntake, setShowLeadIntake] = useState(false);
   const brandName = brands.find((brand) => brand.id === brandId)?.name || "CRM";
   const [leadFilter, setLeadFilter] = useState("");
@@ -797,6 +805,62 @@ export default function App() {
         return timeB - timeA;
       });
   }, [leads]);
+
+  async function startRiskRadar() {
+    if (!authToken) return;
+    if (!riskCompany.trim()) {
+      setRiskError("公司名称不能为空");
+      return;
+    }
+    setRiskError(null);
+    setRiskStatus("pending");
+    setRiskReport(null);
+    const res = await apiPost<any>(
+      "/riskradar/evaluate",
+      {
+        company_name: riskCompany.trim(),
+        country: riskCountry.trim() || "中国",
+        mode: riskMode,
+        locale: riskLocale,
+      },
+      authToken
+    );
+    if (res?.cached && res?.report) {
+      setRiskStatus("completed");
+      setRiskReport(res.report);
+      setRiskTaskId(null);
+      return;
+    }
+    setRiskTaskId(res.task_id || null);
+  }
+
+  useEffect(() => {
+    if (!authToken || !riskTaskId) return;
+    let active = true;
+    const timer = setInterval(async () => {
+      try {
+        const res = await apiGet<any>(`/riskradar/task/${riskTaskId}`, authToken);
+        if (!active) return;
+        setRiskStatus(res.status);
+        if (res.status === "done" && res.report) {
+          setRiskReport(res.report);
+          setRiskTaskId(null);
+        }
+        if (res.status === "failed") {
+          setRiskError("评估失败，请稍后重试");
+          setRiskTaskId(null);
+        }
+      } catch (err) {
+        if (!active) return;
+        setRiskError("评估失败，请稍后重试");
+        setRiskTaskId(null);
+      }
+    }, 3000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [authToken, riskTaskId]);
 
   const dashboard = useMemo(() => {
     const total = sortedLeads.length;
@@ -1266,6 +1330,49 @@ export default function App() {
 
           {activeTab === "ai" && (
             <section className="grid gap-6">
+              <div className="rounded-3xl border border-border bg-card p-6">
+                <h2 className="text-lg font-semibold">RiskRadar 评估</h2>
+                <div className="mt-4 grid gap-4 sm:grid-cols-4">
+                  <Input label={t("fields.companyName")} value={riskCompany} onChange={setRiskCompany} />
+                  <Input label="国家" value={riskCountry} onChange={setRiskCountry} />
+                  <Select
+                    label="模式"
+                    value={riskMode}
+                    onChange={setRiskMode}
+                    options={[
+                      { value: "quick", label: "30秒" },
+                      { value: "standard", label: "5-10分钟" },
+                      { value: "deep", label: "30-60分钟" },
+                    ]}
+                  />
+                  <Select
+                    label="语言"
+                    value={riskLocale}
+                    onChange={setRiskLocale}
+                    options={[
+                      { value: "zh-CN", label: "中文" },
+                      { value: "en-US", label: "English" },
+                    ]}
+                  />
+                </div>
+                <div className="mt-4 flex items-center gap-3">
+                  <button onClick={startRiskRadar} className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white">
+                    开始评估
+                  </button>
+                  {riskStatus && <span className="text-xs text-muted-foreground">状态：{riskStatus}</span>}
+                  {riskError && <span className="text-xs text-destructive">{riskError}</span>}
+                </div>
+                {riskReport && (
+                  <div className="mt-4 rounded-2xl border border-border/70 bg-background/60 p-4 text-sm">
+                    <div>风险等级：{riskReport.risk_level}</div>
+                    <div>可信度评分：{riskReport.confidence_score}</div>
+                    <div className="mt-2">摘要：{riskReport.summary}</div>
+                    {riskReport.key_risks && riskReport.key_risks.length > 0 && (
+                      <div className="mt-2">主要风险：{riskReport.key_risks.join("；")}</div>
+                    )}
+                  </div>
+                )}
+              </div>
               <div className="rounded-3xl border border-border bg-card p-6">
                 <h2 className="text-lg font-semibold">{t("ai.list")}</h2>
                 {aiLeads.length === 0 ? (
@@ -2324,7 +2431,11 @@ function AIEvaluationModal({
   async function handleStart() {
     setStatus(null);
     try {
-      await apiPost(`/leads/${lead.id}/ai-eval-start`, {}, token);
+      await apiPost(
+        `/leads/${lead.id}/ai-eval-start`,
+        { mode: "quick", country: "中国", locale: "zh-CN" },
+        token
+      );
       await onUpdated();
       setStatus(t("ai.pending"));
     } catch (err: any) {

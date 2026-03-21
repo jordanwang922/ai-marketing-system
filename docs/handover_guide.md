@@ -49,3 +49,24 @@ This project is currently in a transition phase from "Development" to "Deploymen
 - Backend: `http://localhost:3001`
 
 **Good luck! The foundation is solid, focusing on clean code and premium UI aesthetics is a priority for the USER.**
+
+---
+
+## 📅 2026-03-22 RiskRadar 交接补充
+- **子系统位置**：`modules/RiskRadar`
+- **设计文档**：`DOCS/riskradar_design.md`
+- **服务入口**：`modules/RiskRadar/server/server.js`
+- **环境变量示例**：`modules/RiskRadar/server/.env.example`
+- **接口**：`/api/riskradar/evaluate`、`/api/riskradar/task/:id`、`/api/riskradar/report`
+- **数据库**：`modules/RiskRadar/server/db/riskradar.sqlite`
+- **当前状态**：MVP 框架完成，LLM 已可接入（豆包/火山引擎），公开搜索为 stub
+- **下一步**：接入公开搜索摘要与商业数据源；CRM 调用函数封装；通知弹屏联调
+
+## 📅 2026-03-22 RiskRadar CRM 联动补充
+- **CRM API 代理**：`/riskradar/evaluate`、`/riskradar/task/:id`、`/riskradar/report`（需要 JWT）
+- **回调地址**：`/riskradar/callback`（使用 `RISKRADAR_CALLBACK_TOKEN` 校验）
+- **Lead 字段新增**：`aiTaskId`、`aiMode`
+- **前端入口**：CRM AI 页新增 RiskRadar 输入面板
+- **环境变量**：
+  - CRM API：`RISKRADAR_BASE_URL`、`RISKRADAR_CALLBACK_TOKEN`
+  - RiskRadar：`CRM_NOTIFY_URL`、`CRM_NOTIFY_TOKEN`、`PUBLIC_SEARCH_*`

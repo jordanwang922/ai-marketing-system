@@ -78,6 +78,8 @@ model Lead {
   aiStatus  String?
   aiRequestedAt DateTime?
   aiEvaluatedAt DateTime?
+  aiTaskId String?
+  aiMode String?
   lastActivityAt DateTime?
   isMerged  Boolean  @default(false)
   mergedIntoId String?

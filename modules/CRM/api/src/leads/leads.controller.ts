@@ -48,8 +48,8 @@ export class LeadsController {
   }
 
   @Post(":id/ai-eval-start")
-  aiEvalStart(@Param("id") id: string, @Req() req: any) {
-    return this.leads.aiEvalStart(id, req.user);
+  aiEvalStart(@Param("id") id: string, @Body() body: any, @Req() req: any) {
+    return this.leads.aiEvalStart(id, body ?? {}, req.user);
   }
 
   @Get(":id/activities")

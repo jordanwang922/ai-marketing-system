@@ -7,7 +7,12 @@ export class JwtAuthGuard implements CanActivate {
     const req = context.switchToHttp().getRequest();
     const url = req.url || "";
 
-    if (url.startsWith("/auth/login") || url.startsWith("/health") || url.startsWith("/leads/form")) {
+    if (
+      url.startsWith("/auth/login") ||
+      url.startsWith("/health") ||
+      url.startsWith("/leads/form") ||
+      url.startsWith("/riskradar/callback")
+    ) {
       return true;
     }
 

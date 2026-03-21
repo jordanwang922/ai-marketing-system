@@ -32,6 +32,7 @@ function initDb() {
       progress INTEGER NOT NULL DEFAULT 0,
       user_id TEXT,
       tenant_id TEXT,
+      client_ref TEXT,
       error TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -66,6 +67,12 @@ function initDb() {
       FOREIGN KEY(company_id) REFERENCES companies(id)
     );
   `);
+
+  const taskColumns = db.prepare(`PRAGMA table_info('tasks')`).all();
+  const taskColumnNames = new Set(taskColumns.map((col) => col.name));
+  if (!taskColumnNames.has('client_ref')) {
+    db.exec(`ALTER TABLE tasks ADD COLUMN client_ref TEXT`);
+  }
 
   return db;
 }

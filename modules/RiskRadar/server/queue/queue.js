@@ -2,19 +2,31 @@ const { nanoid } = require('nanoid');
 const { TASK_STATUS } = require('../../shared/constants');
 const { runEvaluation } = require('../services/evaluator');
 const { searchPublicSources } = require('../services/publicSearch');
+const { notifyCompletion } = require('../services/notifier');
 
 function now() {
   return new Date().toISOString();
 }
 
-function enqueueTask(db, { companyId, mode, locale, userId, tenantId }) {
+function enqueueTask(db, { companyId, mode, locale, userId, tenantId, clientRef }) {
   const id = nanoid();
   const ts = now();
 
   db.prepare(`
-    INSERT INTO tasks (id, company_id, mode, locale, status, progress, user_id, tenant_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
-  `).run(id, companyId, mode, locale, TASK_STATUS.QUEUED, userId || null, tenantId || null, ts, ts);
+    INSERT INTO tasks (id, company_id, mode, locale, status, progress, user_id, tenant_id, client_ref, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    companyId,
+    mode,
+    locale,
+    TASK_STATUS.QUEUED,
+    userId || null,
+    tenantId || null,
+    clientRef || null,
+    ts,
+    ts
+  );
 
   return id;
 }
@@ -103,6 +115,19 @@ async function processNextTask(db) {
     );
 
     updateTaskStatus(db, task.id, TASK_STATUS.DONE, { progress: 100, finished_at: now() });
+
+    await notifyCompletion({
+      task_id: task.id,
+      client_ref: task.client_ref,
+      company_name: company.name,
+      country: company.country,
+      mode: task.mode,
+      locale: task.locale,
+      user_id: task.user_id,
+      tenant_id: task.tenant_id,
+      report,
+      finished_at: now(),
+    });
 
     return true;
   } catch (err) {
