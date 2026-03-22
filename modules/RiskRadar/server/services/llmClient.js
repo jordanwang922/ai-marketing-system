@@ -16,7 +16,7 @@ function getConfig() {
   };
 }
 
-async function chat({ messages, temperature = 0.2 }) {
+async function chat({ messages, temperature = 0.2, responseFormat }) {
   const { baseUrl, apiKey, model, timeoutMs } = getConfig();
   if (!baseUrl || !apiKey || !model) {
     throw new Error('LLM config missing');
@@ -24,11 +24,12 @@ async function chat({ messages, temperature = 0.2 }) {
 
   const res = await axios.post(
     `${baseUrl}/chat/completions`,
-    {
-      model,
-      messages,
-      temperature,
-    },
+      {
+        model,
+        messages,
+        temperature,
+        ...(responseFormat ? { response_format: responseFormat } : {}),
+      },
     {
       headers: {
         'Content-Type': 'application/json',

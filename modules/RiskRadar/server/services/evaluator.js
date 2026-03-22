@@ -157,10 +157,15 @@ async function runEvaluation({ companyName, country, mode, locale, sources }) {
         { role: 'user', content: user },
       ],
       temperature: 0.2,
+      responseFormat: { type: 'json_object' },
     });
     const parsed = extractJson(text);
     if (!parsed) {
-      return addModeExtensions(base, mode, locale);
+      const fallback = addModeExtensions(base, mode, locale);
+      return {
+        ...fallback,
+        summary: String(text || fallback.summary).slice(0, 600),
+      };
     }
     return mergeWithBase(base, parsed, locale);
   } catch {
