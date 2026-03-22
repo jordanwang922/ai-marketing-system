@@ -63,3 +63,8 @@
 - **Lead 任务映射**：新增 `aiTaskId` / `aiMode` 字段，支持任务回写。
 - **CRM 代理接口**：新增 `/riskradar/evaluate`、`/riskradar/task/:id`、`/riskradar/report` 代理调用。
 - **前端 AI 页**：新增 RiskRadar 输入面板，支持公司名/国家/模式/语言与结果展示。
+
+## 📅 2026-03-22
+### **RiskRadar 本地联调与构建修复**
+- **Node 兼容性**：Node 24 编译 `better-sqlite3` 失败，已切换至 Node 22 LTS（Homebrew）。
+- **本地联调**：RiskRadar `/health` 与 `evaluate -> task` 链路可跑通（LLM 关闭时回退模板输出）。

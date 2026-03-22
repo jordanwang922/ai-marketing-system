@@ -70,3 +70,6 @@ This project is currently in a transition phase from "Development" to "Deploymen
 - **环境变量**：
   - CRM API：`RISKRADAR_BASE_URL`、`RISKRADAR_CALLBACK_TOKEN`
   - RiskRadar：`CRM_NOTIFY_URL`、`CRM_NOTIFY_TOKEN`、`PUBLIC_SEARCH_*`
+
+## 📌 RiskRadar 本地运行提示
+- **Node 版本**：建议使用 Node 22 LTS；Node 24 会导致 `better-sqlite3` 编译失败。

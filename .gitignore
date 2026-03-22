@@ -6,5 +6,9 @@ dist/
 **/ .env
 *.sqlite
 **/*.sqlite
+*.sqlite-shm
+**/*.sqlite-shm
+*.sqlite-wal
+**/*.sqlite-wal
 .DS_Store
 **/.DS_Store
