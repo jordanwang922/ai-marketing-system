@@ -68,3 +68,8 @@
 ### **RiskRadar 本地联调与构建修复**
 - **Node 兼容性**：Node 24 编译 `better-sqlite3` 失败，已切换至 Node 22 LTS（Homebrew）。
 - **本地联调**：RiskRadar `/health` 与 `evaluate -> task` 链路可跑通（LLM 关闭时回退模板输出）。
+
+## 📅 2026-03-22
+### **CRM 回调依赖修复与联调验证**
+- **依赖修复**：NotificationsModule 导出 NotificationsService，解决回调控制器依赖注入报错。
+- **联调验证**：RiskRadar -> CRM 回调完成后，Lead 状态自动更新并生成通知记录。
