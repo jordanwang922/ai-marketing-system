@@ -6,7 +6,12 @@
   "scripts": {
     "justright:dev": "npm run dev:all --prefix modules/justright-calendar",
     "justright:build": "npm run build --prefix modules/justright-calendar",
-    "install:all": "npm install && npm install --prefix modules/justright-calendar && npm install --prefix modules/justright-calendar/server"
+    "virallab:app": "npm run dev --prefix modules/virallab/app",
+    "virallab:api": "npm run start:dev --prefix modules/virallab/api",
+    "virallab:worker": "npm run dev --prefix modules/virallab/worker",
+    "virallab:build-app": "npm run build --prefix modules/virallab/app",
+    "virallab:build-api": "npm run build --prefix modules/virallab/api",
+    "install:all": "npm install && npm install --prefix modules/justright-calendar && npm install --prefix modules/justright-calendar/server && npm install --prefix modules/virallab/app && npm install --prefix modules/virallab/api && npm install --prefix modules/virallab/worker"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

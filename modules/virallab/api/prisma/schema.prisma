@@ -1,0 +1,223 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String            @id @default(cuid())
+  email        String            @unique
+  passwordHash String
+  displayName  String
+  status       String            @default("active")
+  lastLoginAt  DateTime?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  sessions     UserSession[]
+  jobs         CollectionJob[]
+  samples      ContentSample[]
+  analyses     AnalysisResult[]
+  patterns     Pattern[]
+  generationJobs GenerationJob[]
+  contents     GeneratedContent[]
+  accounts     PlatformAccount[]
+  logs         AuditLog[]
+}
+
+model UserSession {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String
+  expiredAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PlatformAccount {
+  id             String   @id @default(cuid())
+  userId         String
+  platform       String
+  accountName    String?
+  cookieBlob     String?
+  cookieStatus   String   @default("missing")
+  lastVerifiedAt DateTime?
+  verificationMessage String?
+  verificationMetadataJson String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model CollectionJob {
+  id           String          @id @default(cuid())
+  userId       String
+  platform     String
+  keyword      String
+  sortBy       String
+  collectorMode String        @default("mock")
+  targetCount  Int
+  status       String          @default("pending")
+  progress     Int             @default(0)
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  errorMessage String?
+  metadataJson String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  samples      ContentSample[]
+}
+
+model ContentSample {
+  id                String           @id @default(cuid())
+  jobId             String?
+  userId            String
+  platform          String
+  collectorMode     String           @default("mock")
+  keyword           String?
+  platformContentId String?
+  title             String
+  contentText       String?
+  contentSummary    String?
+  authorName        String?
+  authorId          String?
+  publishTime       DateTime?
+  likeCount         Int              @default(0)
+  commentCount      Int              @default(0)
+  collectCount      Int              @default(0)
+  shareCount        Int              @default(0)
+  tagsJson          String?
+  sourceUrl         String?
+  coverImageUrl     String?
+  mediaImageUrlsJson String?
+  mediaVideoUrlsJson String?
+  rawPayloadJson    String?
+  parsedPayloadJson String?
+  status            String           @default("active")
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  job               CollectionJob?   @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  analyses          AnalysisResult[]
+  patternSources    PatternSource[]
+}
+
+model AnalysisResult {
+  id                 String           @id @default(cuid())
+  sampleId           String
+  userId             String
+  analysisVersion    String
+  hookType           String?
+  structureType      String?
+  emotionTagsJson    String?
+  rhythmType         String?
+  trendTagsJson      String?
+  targetAudienceJson String?
+  viralReasonsJson   String?
+  keyPointsJson      String?
+  riskNotesJson      String?
+  summary            String?
+  modelName          String?
+  promptVersion      String?
+  fallbackStatus     String?
+  fallbackReason     String?
+  rawResultJson      String?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  sample             ContentSample    @relation(fields: [sampleId], references: [id], onDelete: Cascade)
+  user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  patternSources     PatternSource[]
+}
+
+model Pattern {
+  id                      String            @id @default(cuid())
+  userId                  String
+  name                    String
+  topic                   String?
+  description             String?
+  hookTemplate            String?
+  bodyTemplate            String?
+  endingTemplate          String?
+  emotionalCore           String?
+  trendSummary            String?
+  applicableScenariosJson String?
+  confidenceScore         Float             @default(0)
+  modelName               String?
+  promptVersion           String?
+  fallbackStatus          String?
+  fallbackReason          String?
+  status                  String            @default("active")
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
+  user                    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sources                 PatternSource[]
+  generationJobs          GenerationJob[]
+  contents                GeneratedContent[]
+}
+
+model PatternSource {
+  id         String         @id @default(cuid())
+  patternId  String
+  sampleId   String
+  analysisId String
+  createdAt  DateTime       @default(now())
+  pattern    Pattern        @relation(fields: [patternId], references: [id], onDelete: Cascade)
+  sample     ContentSample  @relation(fields: [sampleId], references: [id], onDelete: Cascade)
+  analysis   AnalysisResult @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+}
+
+model GenerationJob {
+  id             String             @id @default(cuid())
+  userId         String
+  patternId      String?
+  topic          String
+  goal           String?
+  tone           String?
+  targetAudience String?
+  status         String             @default("pending")
+  errorMessage   String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  user           User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pattern        Pattern?           @relation(fields: [patternId], references: [id], onDelete: SetNull)
+  contents       GeneratedContent[]
+}
+
+model GeneratedContent {
+  id                  String        @id @default(cuid())
+  jobId               String
+  userId              String
+  patternId           String?
+  platform            String
+  titleCandidatesJson String?
+  bodyText            String?
+  coverCopy           String?
+  tagsJson            String?
+  generationNotes     String?
+  modelName           String?
+  promptVersion       String?
+  fallbackStatus      String?
+  fallbackReason      String?
+  rawResultJson       String?
+  status              String        @default("draft")
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+  job                 GenerationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  user                User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pattern             Pattern?      @relation(fields: [patternId], references: [id], onDelete: SetNull)
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String
+  targetType String?
+  targetId   String?
+  payloadJson String?
+  createdAt  DateTime @default(now())
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+}

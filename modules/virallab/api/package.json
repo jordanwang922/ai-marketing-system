@@ -1,0 +1,36 @@
+{
+  "name": "virallab-api",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "start": "node dist/main.js",
+    "start:dev": "nest start --watch",
+    "build": "nest build",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:push": "prisma db push",
+    "db:init:sqlite": "sh -c 'tmp_sql=$(mktemp) && rm -f ./prisma/dev.db && DATABASE_URL=${DATABASE_URL:-file:./prisma/dev.db} npx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > \"$tmp_sql\" && sqlite3 ./prisma/dev.db < \"$tmp_sql\" && rm \"$tmp_sql\"'"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/platform-express": "^11.0.0",
+    "@prisma/client": "^6.5.0",
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^16.6.1",
+    "jsonwebtoken": "^9.0.2",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.0",
+    "@nestjs/schematics": "^11.0.0",
+    "@nestjs/testing": "^11.0.0",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^24.10.1",
+    "prisma": "^6.5.0",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.9.3"
+  }
+}

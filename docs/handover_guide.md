@@ -73,3 +73,303 @@ This project is currently in a transition phase from "Development" to "Deploymen
 
 ## 📌 RiskRadar 本地运行提示
 - **Node 版本**：建议使用 Node 22 LTS；Node 24 会导致 `better-sqlite3` 编译失败。
+
+---
+
+## 📅 2026-03-25 ViralLab 交接补充
+- **模块位置**：`modules/virallab`
+- **设计文档**：`docs/virallab_v1_design.md`
+- **开发日志**：`docs/virallab_development_log.md`
+- **交接文档**：`docs/virallab_handover.md`
+- **当前状态**：本地 MVP 可运行，已跑通 `采集 -> 分析 -> Pattern -> 生成` 模拟闭环
+- **前端入口**：`modules/virallab/app`
+- **后端入口**：`modules/virallab/api`
+- **当前存储方式**：本地 JSON 文件 `modules/virallab/api/data/virallab-mvp.json`
+- **real collector 状态**：
+  - Playwright worker 已实现
+  - 已支持 Cookie 注入、小红书搜索页访问、DOM/initial-state 双路径提取
+  - 已支持失败 diagnostics 与 screenshot/HTML artifact 输出
+  - artifact 位置：`modules/virallab/worker/artifacts`
+  - 采集任务现已采用异步状态流转：`pending -> running -> completed/failed`
+  - 已支持 Cookie 验证接口，可将平台账号标记为 `verified` 或 `invalid`
+  - 真实采集现要求 Cookie 必须处于 `verified` 状态，否则前后端都会拦截
+  - 但 `saved` 状态会在首次 real collect 时自动触发一次验证
+- **注意事项**：
+  - 当前已经有真实小红书采集框架，但要拿到真实样本仍然需要有效 Cookie
+  - 当前 Analyze / Pattern / Generate 都已可走真实豆包 LLM
+  - 前端现在已经能直接看出结果是 `LLM`、`fallback` 还是 `local-only`
+  - 当前已经有 SQLite / Prisma mirror，但运行时主读写仍是 JSON 文件
+  - 不过 `auth/me`、`platform-accounts`、`overview`、`collect`、`samples / analyze / patterns / generate detail` 读接口已能优先走 Prisma
+  - `register / login / logout / save cookie / verify cookie` 也已开始走 Prisma 主写
+  - `collect job creation / runtime status / sample insertion / collect audit logs / auto verify saved cookie` 也已开始走 Prisma 主写
+  - `analyze / patterns / generate` 的创建链路也已开始走 Prisma 主写
+  - `store.service.ts` 已不再在每次写 JSON 后都整库 mirror 到 Prisma，当前只在初始化和显式同步时做全量 JSON -> Prisma
+  - `collect` 启动恢复与 `analyze / patterns / generate` 的主要源数据查找也开始直接走 Prisma
+  - `auth + platform` 的 JSON 兼容同步已经收口到更明确的 helper，不再到处散落
+  - `ViralLabStoreService` 现在会在模块启动时主动初始化，JSON -> Prisma 的启动回填已经修稳
+  - 已完成一次真实小红书扫码联调，真实 Cookie 验证和真实样本落库已经成功
+  - 真实采集器已进一步增强，当前可通过 `search/notes` 网络响应稳定落下 5 条真实样本
+  - 已新增真实工作流接口 `POST /api/virallab/workflow/latest-real-pipeline`，可直接基于最近一次 real collect 串起 `Analyze -> Pattern -> Generate`
+  - `ViralLab` 现在会自动继承 `modules/RiskRadar/server/.env` 的 Ark 配置，不需要再手工复制 LLM 密钥
+  - 最新一次真实工作流已验证成功，Pattern 和 Generated Content 已能回到真实 LLM 输出
+  - `Analyze` 现在支持 `forceReanalyze=true`，可以把历史真实样本从旧的 local/fallback analysis 升级成当前的 LLM analysis
+  - `latest-real-pipeline` 也已默认开启强制重跑分析，但因此接口耗时会更长
+  - 现在也有异步版本的真实工作流：
+    - `POST /api/virallab/workflow/jobs`
+    - `GET /api/virallab/workflow/jobs`
+    - `GET /api/virallab/workflow/jobs/:workflowJobId`
+  - 前端的 `Run Latest Real Pipeline` 已改成走异步 job，不再阻塞一个长请求
+  - async workflow job 现在已经有阶段级进度：
+    - `queued`
+    - `preparing`
+    - `analyzing`
+    - `analysis_completed`
+    - `pattern_inputs_ready`
+    - `extracting_pattern`
+    - `pattern_completed`
+    - `pattern_persisted`
+    - `generating`
+    - `generation_completed`
+    - `completed`
+  - `Analyze / Pattern` 的 LLM 超时都已补长到 `45000ms`
+  - JSON -> Prisma 启动回填现在会过滤失效的 `PatternSource` 引用，避免旧数据把启动流程打崩
+  - 真实样本字段质量也继续提升了：
+    - 日期型 tag 不再落库
+    - `publishTime` 会优先解析 note-card 时间字段
+    - `contentSummary` 现在至少会带作者、发布时间和互动指标
+    - 标题关键词会补进 tags，避免所有样本都只剩搜索词
+  - worker 里现在也有一个安全版 detail enrichment 二次补全层：
+    - 会尝试打开 `sourceUrl` 对应的笔记详情页补正文
+    - 但当前站点详情页会混入推荐内容，所以实现已经强约束为“不覆盖 title/author/publishTime”
+    - 最新安全模式验证任务 `job_8f2e8757` 的结果是 `detailEnrichedCount=0`，说明当前路径还没拿到稳定正文，但至少不会污染已有样本
+  - worker 现在还会自动探测候选 note detail API，并把结果写进 collect job metadata：
+    - 当前探测的是 `h5/v1/note_info`
+    - 最新验证任务 `job_46050621` 中，该接口对真实 noteId 稳定返回 `HTTP 406` 和 `{\"code\":-1,\"success\":false}`
+  - 最新一轮增强后，worker 还会额外捕获浏览器真实发出的 `note_info` 请求：
+    - metadata 中会保留 `x-s / x-t / x-s-common / x-xray-traceid / x-b3-traceid` 这类签名头的摘要
+    - 最新验证显示：
+      - direct request `h5-note-info` 仍返回 `406`
+      - browser-signed `note_info` 已返回 `200` 和 `code=0`
+      - 但当前 body 仍只暴露很少字段（目前确认到 `note_type`）
+      - 页面本身还可能跳到 `404 / 当前笔记暂时无法浏览`
+  - 最新这一轮又新增了两层诊断：
+    - `signedReplay`：把浏览器抓到的签名头原样重放到 request-context
+    - `discoveredResponses`：记录详情页导航期间命中的相关 `edith` 接口
+  - 最新验证显示：
+    - `signedReplay` 目前只能复现 `461 + code=0 + data={}`
+    - 说明签名头不能直接脱离页面上下文复用成“完整 detail 请求”
+    - 目前也还没观察到第二条明显返回更完整正文的 detail API
+  - 现在 worker 还会自动跑 `search-page-note-route`：
+    - 它从搜索页重新进入目标 note，并记录整条链路里出现的 `edith` 接口
+    - 新增可见的主要是：
+      - `search/onebox`
+      - `search/filter`
+      - `search/recommend`
+      - `search/notes`
+      - `board/user`
+    - 但这条链路仍没有暴露出更完整的 note detail payload
+  - `browser-note-info` 现在还额外带有 `pageSignedFetch`：
+    - 会在页内调用 `_webmsxyw(url, "GET")`
+    - 记录生成出的 `x-s / x-t`
+    - 再分别用页内 `fetch` 和 `XHR` 主动请求 `note_info`
+  - 最新验证显示：
+    - `_webmsxyw` 能产出签名头
+    - 但页内主动请求仍然只是 `406 + code=-1`
+    - 所以下一步不应该再假设“拿到 `_webmsxyw` 就够了”
+  - 现在这块还会额外记录 `xsecappid / xsecappvers / xsecplatform` 以及对应的主动请求测试：
+    - `fetchWithXsecResult`
+    - `xhrWithXsecResult`
+  - 最新验证显示：
+    - 即使把 `x-s/x-t + xsec*` 一起带上，页内主动请求依然是 `406`
+    - 这意味着自动请求链路还依赖别的运行时上下文
+  - 最新这一轮又补了一层 `fetch/XHR` hook：
+    - `preSignedJsRequestHooks`
+    - `automaticRequestBypassedJsHooks`
+  - 最新验证显示：
+    - 自动 `note_info` 网络请求仍然存在
+    - 但在我们自己的主动 probe 之前，JS hook 里没有对应记录
+    - `automaticRequestBypassedJsHooks = true`
+    - 这意味着该自动请求至少没有走普通页面脚本可钩到的 `fetch/XHR`
+  - 最新这轮又补了 CDP initiator：
+    - `cdpInitiators`
+    - `automaticRequestStackSummary`
+  - 最新验证显示：
+    - 自动 `note_info` 实际上是 `script` 发起的 `XHR`
+    - 栈里已经能看到：
+      - `dispatchXhrRequest`
+      - `xhrAdapter`
+    - `dispatchRequest`
+    - `xhrByBridgeAdapter`
+    - `library-axios.4d38c57d.js`
+    - `vendor-dynamic.1f7e7d2e.js`
+    - 所以下一步应该沿着“小红书内部 axios bridge 调用链”继续查，而不是再把它当成纯黑盒网络层
+  - 按在线方案的思路，worker 现在还会检查关键签名 cookie：
+    - `detailApiProbe.cookieSignatureInputs`
+  - 当前真实登录态里已经确认：
+    - `a1`
+    - `web_session`
+    - `webId`
+    都存在，且 `allRequiredPresent = true`
+  - 这意味着当前 detail 问题并不是“登录态缺少基础签名 cookie”
+  - 继续沿着在线签名方案的思路，worker 现在还会在页内重放“自动请求抓到的完整 headers”：
+    - `fetchWithCapturedHeadersResult`
+    - `xhrWithCapturedHeadersResult`
+  - 最新验证显示：
+    - 仅用 `x-s/x-t` 主动请求仍是 `406`
+    - 带上完整捕获 headers 之后，已经能稳定到 `461 + code=0 + data={}`
+    - 说明 `x-s-common` 这类完整 header 集合确实重要
+    - 但当前仍然拿不到完整 detail payload
+  - worker 现在还会显式探测 `web/v1/feed` 这类常见候选：
+    - `GET /feed?note_id`
+    - `GET /feed?source_note_id`
+    - `POST /feed { note_id }`
+  - 最新验证显示：
+    - GET 两条都是 `404`
+    - POST 是 `406`
+    - 所以 `feed` 这条显式入口当前也不是正确的 detail 方案
+- 目前 real collector 已经新增一条更务实的正文补全路径：
+  - `enrichSamplesFromSearchModal(page, samples, keyword)`
+  - 它不会去点击隐藏的 `/explore/{noteId}` 锚点，而是：
+    - 先锁定包含该 noteId 的 `section.note-item`
+    - 再点击里面真正可见的 `a.cover.mask.ld` 或 `a.title`
+    - 打开搜索页 note modal 后，从 `#detail-title` 和 `#detail-desc .note-text` 抽正文
+- 最新真实验证结果：
+  - `modalEnrichment.modalOpenCount=5`
+  - `modalEnrichment.detailEnrichedCount=5`
+  - 总体 `detailEnrichedCount=5`
+  - 真实样本已经拿到正文，不再只是搜索摘要
+- 现在样本模型也已经能正式承接媒体资源：
+  - `mediaImageUrls`
+  - `mediaVideoUrls`
+  - Prisma 对应字段：
+    - `mediaImageUrlsJson`
+    - `mediaVideoUrlsJson`
+- 当前 worker 的媒体抽取策略：
+  - 抽 `.media-container img`
+  - 抽 `.media-container video`
+  - 把 `video[poster]` 并入图片数组
+  - 过滤掉 `blob:` 视频地址，避免把浏览器内部临时 URL 落库
+- 最新真实验证结果：
+  - 第一条样本已包含可复用的 CDN 图片 URL
+  - `coverImageUrl` 与第一张图片一致
+  - `mediaVideoUrls` 已经不再被 `blob:` 污染
+- 控制台现在也已经把这批真实样本能力展示出来了：
+  - `Samples` 面板可直接看到正文片段、作者、发布时间、封面和媒体数量
+  - `Collection Jobs` 可直接看到 `modal opens / modal enriched`
+- 这意味着后续联调时，不需要再优先看原始 JSON，就能快速判断采集质量是否变好
+- 样本现在还新增了稳定标识字段：
+  - `platformContentId`
+  - `authorId`
+  - 以及 ISO 化的 `publishTime`
+- 最新真实验证结果里，首条样本已经明确带回：
+  - `platformContentId = 69a6883a000000001a02b3e0`
+  - `authorId = 642e876e000000001201368a`
+  - `publishTime = 2026-03-03T00:00:00.000Z`
+- 当前的重点是先演示完整工作流
+- **建议下一步**：
+  - 基于现在已经拿到的真实正文和图片资源，继续提升字段完整度，比如标签质量、发布时间归一化和可复用的视频直链
+  - 说明：`Analyze / Pattern` 现在已经显式吸收 `platformContentId / authorId / publishTime / media`，并已升级到：
+    - `analyze.v3.llm`
+    - `patterns.v3.llm`
+  - 采集层现在也已经收口成 provider 架构：
+    - `mock-local`
+    - `xiaohongshu-playwright`
+    - `xiaohongshu-managed`
+  - 其中 `xiaohongshu-managed` 目前是预留 stub，还没接真实第三方服务
+  - 前端采集面板也已经接上 `providerId`，现在可以直接在 UI 中切换 real provider
+  - `xiaohongshu-managed` 现在已经不是纯 stub：
+    - 已按 XCrawl 官方 scrape 接口形态接上真实 HTTP provider
+    - 但还需要 `XCRAWL_API_KEY` 才能做线上联调
+  - 它现在也已经做了更宽松的返回兼容：
+    - 不只认 `json.items`
+    - 可兼容 `results / notes / cards / list / data.*`
+  - 同时也已经有二次兜底：
+    - `json` 不行时会退回 `links + markdown/html`
+  - 现在这个兜底已经有真实输入，不再只是代码分支：
+    - XCrawl 请求会正式索取 `markdown/html/links`
+    - fallback 也会直接解析 markdown/html 中的 `/explore/{id}` 链接
+  - 样本层现在也已经显式暴露 `provider`，后面一旦跑出 managed 样本，就能直接在控制台里看 provider 对比
+  - job 层现在也已经显式暴露 managed 质量指标，后面一旦有 XCrawl key，可以直接看 `json` 命中率和 fallback 使用情况
+  - workflow 层现在也已经支持 `providerId`，后面可以分别跑 playwright 样本流和 managed 样本流
+  - 前端现在也有独立的 `Workflow Scope` 面板，不再需要隐式借用采集表单
+  - 样本层现在也已经有轻量质量评分：
+    - `qualityScore`
+    - `qualityFlags`
+  - 它是 API 返回时动态计算的，不需要 schema migration
+  - 前端现在可以直接看：
+    - 每条样本的质量分
+    - 当前最常见的缺口字段
+  - 这意味着后续继续优化自研采集时，可以直接按缺口频率排序推进，而不是手动逐条翻样本
+  - 自研 worker 现在也已经开始按这些缺口做反向优化：
+    - 发布时间支持更多真实文案：
+      - `刚刚 / 刚才`
+      - `x分钟前 / x小时前 / x天前`
+      - `今天 / 昨天 / 前天`
+      - `MM月DD日 / YYYY年MM月DD日`
+    - 标签现在有统一清洗和合并层，会过滤掉日期/时间噪音和通用低价值词
+  - 这一步的主要目标是进一步压低：
+    - `missing_publish_time`
+    - `missing_tags`
+    - 和噪音标签对 Analyze/Pattern 的干扰
+  - 质量评分现在已经不仅用于展示，也用于默认选样：
+    - `AnalyzeService` 默认会优先分析高质量样本
+    - `WorkflowService` 默认会优先把高质量样本送进整条 pipeline
+  - 这意味着后续在没有手动挑 sample 的情况下，默认 LLM 输出质量也会更稳定
+  - workflow 结果层现在也能直接看到本次输入样本的质量：
+    - 平均分
+    - 最佳样本分
+    - 各参与样本分数
+  - 这一步的价值是排障更快：
+    - 如果 workflow 结果一般，但输入样本平均分也低，问题更可能在采集质量
+    - 如果输入样本平均分高但结果仍一般，再优先看 prompt / pattern / generation 逻辑
+  - 现在 workflow 面板还会继续显示 AI 来源和输出丰富度：
+    - analyses 里有多少条是 `llm / local-fallback / local-only`
+    - pattern 和 generate 分别来自哪种来源
+    - pattern confidence
+    - 生成标题数、标签数
+  - 这样后面看一条 pipeline 是否“跑通且靠谱”时，不再只靠主观感觉
+  - workflow 面板现在也已经能直接看：
+    - Pattern 的来源、confidence、description
+    - Generate 的来源、标题候选、标签和 coverCopy
+  - 这意味着“最近一次真实 pipeline”已经可以在一个区块里完成快速 review
+  - 现在 workflow 快照和下面的历史区块也已经对上了：
+    - 可以直接跳到 pattern library / latest draft
+    - 对应条目会高亮显示 `latest workflow`
+  - 这一步主要是减少人工核对 id 的成本
+  - 现在 analyses 也已经纳入同一套对照：
+    - workflow diagnostics 可直接跳到 `#analyze`
+    - 对应 analysis 记录也会高亮
+  - 现在 samples 也已经纳入同一套对照：
+    - workflow diagnostics 可直接跳到 `#samples`
+    - 对应输入样本也会高亮
+  - 现在 workflow 面板最上面也已经有一个结论层：
+    - `strong / usable / review`
+    - 外加一句 summary
+  - 这样判断一轮 pipeline 是否健康，可以先看 verdict，再看下面的细项
+  - 现在最上面的 `Workflow Jobs` 卡片也会直接显示这个 verdict
+  - 所以不看详细结果区，也能先判断最近一次运行值不值得继续展开看
+  - 现在这个卡片还会继续显示基础摘要：
+    - 平均样本质量
+    - LLM analyses 数
+    - pattern / generate source
+  - 所以后面即使只盯列表层，也已经能看出最近一次 workflow 大概健康到什么程度
+  - 现在也已经可以直接重跑最近一次 workflow：
+    - 不需要重新填 provider、sampleLimit、forceReanalyze
+    - 直接点 `Re-run Latest Workflow`
+  - 现在 `Samples` 面板默认会显示最新 10 条样本，而不是 5 条
+  - 这次已经实际执行过一次 `AI教育` latest 10 的真实采集联调：
+    - job id: `job_0e805361`
+    - 结果：失败
+    - 原因：小红书搜索接口拒绝当前保存的登录态，返回 `code=-101`
+  - 这说明当前最需要的不是继续猜采集逻辑，而是刷新平台 Cookie 后再重跑
+  - 控制台现在已经支持双语切换，默认中文：
+    - 登录页右上角可切换
+    - 登录后侧边栏顶部也可切换
+  - 主要静态界面都已完成双语化
+  - 业务内容仍保留原始中文/原文，不建议在 UI 层强制翻译模型产出
+  - 下一步更值得做的是用这批 richer samples 重跑真实 pipeline，观察 Pattern 和 Generate 质量是否明显提升
+  - 下一轮应优先验证：
+    - `vendor-dynamic -> xhrByBridgeAdapter -> axios` 这条链里是否还会打别的 note detail 接口
+    - 是否存在比 `h5/v1/note_info` 返回更完整字段的 detail API
+  - 继续盘点剩余 JSON fallback 写路径，准备最终切掉 JSON 作为运行时兼容层
+  - 继续补 prompt/request 级别审计日志

@@ -1,0 +1,673 @@
+# ViralLab Implementation Notes
+
+## Initial Scope
+
+V1 implements the small red book workflow only:
+
+1. user auth
+2. collection job creation
+3. sample storage
+4. analysis
+5. pattern placeholders
+6. generation
+
+## First Build Targets
+
+1. complete Prisma migrations
+2. replace placeholder auth with persistent auth
+3. move in-process async collect jobs to a real queue
+4. wire app pages to API endpoints
+5. implement collector with Playwright and cookie reuse
+
+## Real Collector Notes
+
+- `collectorMode=real` now routes through the worker bridge.
+- Worker entry:
+  - `worker/src/run-xiaohongshu-collector.js`
+- Required env:
+  - `VIRALLAB_ENABLE_REAL_COLLECTOR=true`
+  - `VIRALLAB_COLLECTOR_HEADLESS=true|false`
+- Cookie source is currently user-provided through the ViralLab app.
+- Extraction strategy is best-effort:
+  - first try `window.__INITIAL_STATE__.search.feeds`
+  - then try generic `window.__INITIAL_STATE__` note-like objects
+  - fall back to generic note-card DOM heuristics
+- Debug artifacts:
+  - screenshots and HTML dumps are written to `worker/artifacts`
+- Current verified behavior:
+  - invalid or expired cookie returns `no-cards-extracted`
+  - failures include diagnostics and artifact paths
+  - diagnostics include `stateSummary` to distinguish SSR/state emptiness from DOM selector breakage
+- Frontend exposes the latest verification metadata directly in the platform account panel for faster local debugging
+- `GET /collect/debug-summary` provides a single aggregated payload for the latest collector diagnostics
+- worker diagnostics also track matched search-related network responses, which are useful when DOM and SSR state are both empty
+- authentication diagnosis should prefer search API JSON error codes/messages over page text when available
+- Cookie verification:
+  - `POST /platform-accounts/xiaohongshu/verify` runs the worker in verification mode
+  - valid cookies should promote account status to `verified`
+  - invalid cookies are marked `invalid`
+  - real collection should only be allowed once the cookie is `verified`
+  - a `saved` cookie may be auto-verified when the first real collect request arrives
+- Collection execution:
+  - `POST /collect/jobs` queues a job immediately
+  - API process executes the job asynchronously
+  - frontend polls job state from `GET /collect/jobs`
+
+## LLM Notes
+
+- ViralLab now has a shared LLM client at `api/src/llm/llm.service.ts`
+- The client uses Ark/OpenAI-compatible `chat/completions`
+- Expected env vars:
+  - `VIRALLAB_USE_LLM`
+  - `LLM_BASE_URL`
+  - `LLM_API_KEY`
+  - `LLM_MODEL`
+  - `LLM_TIMEOUT_MS`
+- `AnalyzeService` flow:
+  - build structured JSON prompt from sample title/content/engagement
+  - parse strict JSON response
+  - fall back to local analyzer output on timeout / parse failure / missing config
+- `PatternsService` flow:
+  - build structured JSON prompt from selected analyses and source samples
+  - ask the model to abstract a reusable content pattern
+  - clamp `confidenceScore` to `0..1`
+  - fall back to local pattern output on timeout / parse failure / missing config
+- `GenerateService` flow:
+  - build structured JSON prompt from topic/goal/tone/audience/pattern
+  - parse strict JSON response
+  - normalize returned tags
+  - fall back to local generator output on timeout / parse failure / missing config
+- Generation is slower than analysis against Ark in current testing; it uses a per-request timeout override of 45 seconds
+- Pattern extraction currently uses a 30-second timeout override
+- Verified live outputs:
+  - analysis returns `promptVersion: analyze.v2.llm`
+  - patterns returns an LLM-derived reusable template object
+  - generation returns `promptVersion: generate.v2.llm`
+- Auditability:
+  - analyses, patterns, and generated contents all persist `fallbackStatus` and `fallbackReason`
+  - patterns also now persist `modelName` and `promptVersion`
+  - store initialization normalizes old JSON records so the UI can safely read these fields
+
+## Folder Conventions
+
+- API modules live under `api/src/<module>`
+- worker task handlers live under `worker/src`
+- frontend page sections live under `app/src/components`
+
+## Database Notes
+
+- Current persistence strategy is hybrid:
+  - JSON file remains the primary runtime store
+  - SQLite / Prisma acts as a mirror for ongoing migration
+- Enable mirror with:
+  - `VIRALLAB_ENABLE_DB_MIRROR=true`
+  - `DATABASE_URL=file:./prisma/dev.db`
+- Local initialization:
+  - `npm run prisma:generate`
+  - `npm run db:init:sqlite`
+- `store.service.ts` no longer mirrors the full snapshot into SQLite after each write
+- When persistence is enabled, startup performs a one-time JSON -> SQLite sync
+- Additional explicit full sync is available through `syncFileToPrisma()`
+- `ViralLabStoreService` now also runs initialization on module startup, so bootstrap sync is triggered reliably
+- Bootstrap sync now explicitly connects Prisma before running the full snapshot transaction
+- This is intentionally a transitional step before replacing file-backed reads with repository-based Prisma reads
+- Prisma-backed reads currently cover:
+  - auth session resolution
+  - platform account list
+  - overview stats
+  - collect jobs / detail / capabilities / debug summary
+  - samples
+  - analyses
+  - patterns
+  - generation detail
+- Prisma-first writes currently cover:
+  - auth register / login / logout
+  - platform cookie save / verify
+  - collect job create
+  - collect job running/completed/failed updates
+  - collect sample inserts
+  - collect audit log writes
+  - saved-cookie auto verification updates during real collect
+  - analyze result creation
+  - pattern creation
+  - pattern source creation
+  - generation job creation
+  - generated content creation
+- Prisma-backed source lookup now also covers major creation flows:
+  - collect startup recovery
+  - analyze sample lookup
+  - analyze existing-result lookup
+  - pattern analysis/sample lookup
+  - generation pattern/user lookup
+- Compatibility helpers have been centralized further:
+  - auth user/session JSON synchronization
+  - platform account/audit JSON synchronization
+  - platform default user resolution
+- Real collector milestone:
+  - a real Xiaohongshu scanned login session has been connected successfully
+  - cookie verification passed
+  - real collection first completed with `extractedFrom: initial-state`
+  - after targeted `search/notes` parsing, real collection now completes with `extractedFrom: network`
+  - extracted sample count improved from 1 to 5 on the same keyword flow
+  - the resulting real sample was persisted and analyzed
+- Real workflow milestone:
+  - a new workflow endpoint now exists:
+    - `POST /api/virallab/workflow/latest-real-pipeline`
+  - it selects the latest completed real collect job and runs:
+    - analyze
+    - pattern extraction
+    - generation
+  - this gives the frontend a single action for real-data demos
+- LLM environment note:
+  - ViralLab boot now loads env files in this order:
+    - local `modules/virallab/api/.env`
+    - fallback `modules/RiskRadar/server/.env`
+  - this is primarily to reuse the existing Ark / Doubao configuration already present in RiskRadar
+- Verified latest real workflow output:
+  - latest real job: `job_ba52f894`
+  - latest LLM pattern: `pattern_f34ae4a8`
+  - latest LLM content: `content_f68ff7c2`
+- Re-analysis note:
+  - analyze jobs now support `forceReanalyze=true`
+  - this deletes previous analyses for the same sample before rebuilding
+  - useful for upgrading older local/fallback real-sample analyses to current LLM analyses
+- Timeout tuning:
+  - analyze LLM timeout increased to `45000ms`
+  - pattern LLM timeout increased to `45000ms`
+- Bootstrap sync safety:
+  - invalid `PatternSource` rows are filtered during JSON -> Prisma backfill
+  - this avoids foreign-key failures when older patterns reference removed analyses
+- Async workflow note:
+  - real workflow now has an async job API under `workflow/jobs`
+  - this is intentionally file-backed for now to avoid expanding Prisma schema mid-migration
+  - startup recovers unfinished workflow jobs from the JSON store
+  - frontend polling now includes workflow jobs, not just collect jobs
+  - workflow metadata now tracks execution stages such as:
+    - `preparing`
+    - `analyzing`
+    - `extracting_pattern`
+    - `generating`
+    - `completed`
+  - analyze-stage messages now also include sample-level progress and title
+  - generation now emits an intermediate `generation_completed` stage before final completion
+  - workflow cards can show `patternId` and `contentId` directly from metadata
+  - pattern extraction now also has intermediate states:
+    - `pattern_inputs_ready`
+    - `pattern_persisted`
+- JSON is still updated after these writes so the remaining JSON-based modules keep working
+- Real collector enrichment note:
+  - `search/notes` payloads still often expose title + author + interaction + date rather than full正文
+  - because of that, the worker now enriches fallback sample fields instead of waiting for a richer正文 source
+  - date-like tags such as `03-04` are filtered out of `tags`
+  - `publishTime` now resolves from multiple card/current time fields, then falls back to date-like tags when needed
+  - fallback summaries now include author, publish date, and core interaction metrics
+  - title keywords are now extracted to improve tag quality when hashtags are missing
+- Verified real collect batch after this change:
+  - job `job_858c24d0`
+  - extracted `5` samples from network payloads
+  - sample summaries and tags are materially better than the earlier generic fallback batch
+- Safe detail-enrichment note:
+  - the worker now also contains a second-pass `sourceUrl -> note detail page` enrichment function
+  - this was added to prepare for future正文补全, but the current site behavior is tricky:
+    - detail pages mix target-note and recommendation state
+    - wide state scanning can therefore corrupt titles/authors if used naively
+  - guardrails now in place:
+    - match by noteId extracted from `sourceUrl`
+    - do not override title/author/publishTime/metrics from detail pages
+    - only accept detail正文 when detail title clearly aligns with the original sample title
+  - verified safe-mode run:
+    - job `job_8f2e8757`
+    - `detailEnrichedCount=0`
+    - no corruption of the original search-sample fields
+- Detail API probe note:
+  - the worker now also probes candidate note-detail APIs during real collect
+  - current first-class candidate:
+    - `https://edith.xiaohongshu.com/api/sns/h5/v1/note_info?note_id=...`
+  - probe results are persisted in collect job metadata under `detailApiProbe`
+  - verified run:
+    - job `job_46050621`
+    - the candidate API responded with `HTTP 406` and body `{\"code\":-1,\"success\":false}`
+  - this means the next正文补全 step should focus on required headers/signatures for that API, not on broader DOM guessing
+- Browser-signed probe note:
+  - `detailApiProbe` now also captures the browser-emitted `note_info` request from a real page navigation
+  - implementation detail:
+    - `probeDetailApiCandidates(context, cookieBlob, samples)` now opens each sample `sourceUrl`
+    - it records the signed request headers and the paired response
+    - response bodies are summarized via `summarizeJsonishBody(...)`
+  - latest direct verification confirmed:
+    - plain request-context `h5-note-info` => `406`
+    - browser-context `note_info` => `200` with `code=0`
+  - however, the returned `dataKeys` are still minimal, currently only `note_type`
+  - and the corresponding page navigation may still land on:
+    - `404`
+    - `当前笔记暂时无法浏览`
+  - conclusion:
+    - signing is one real requirement, now confirmed
+    - but a second availability/visibility constraint also exists for some notes
+- Signed replay note:
+  - the probe now also replays the browser-captured signed headers in request-context as `signed-replay-note-info`
+  - current verified outcome:
+    - replay does not recover richer detail payloads
+    - it returns `HTTP 461` with `code=0`, `success=true`, and empty `data`
+  - the probe also records `discoveredResponses` during note-page navigation
+  - so far, the visible related APIs are still mostly:
+    - `h5/v1/note_info`
+    - `web/v2/user/me`
+    - `web/v1/homefeed`
+    - `web/v1/search/querytrending`
+  - implication:
+    - moving the signed headers out of page context is not sufficient
+    - future work should prefer browser-context fetching or discovery of a different detail endpoint
+- Search-route probe note:
+  - `detailApiProbe` now also includes `search-page-note-route`
+  - implementation detail:
+    - the worker reopens the keyword search page
+    - finds the target note link by noteId
+    - then navigates into that note while tracking all related `edith` responses
+  - latest verified result:
+    - this adds visibility into several search-layer APIs:
+      - `search/onebox`
+      - `search/filter`
+      - `search/recommend`
+      - `search/notes`
+      - `board/user`
+    - but it still does not reveal a richer note-detail endpoint
+    - the target `note_info` response on this path remains `461` with `data={}`
+- Page-signed fetch note:
+  - `browser-note-info` now also records `pageSignedFetch`
+  - implementation detail:
+    - inside the page, the worker calls `window._webmsxyw(url, "GET")`
+    - captures the returned `x-s / x-t`
+    - retries the same `note_info` request through page-context `fetch` and `XMLHttpRequest`
+  - latest verified result:
+    - `_webmsxyw` is available and generates `x-s / x-t`
+    - but both page-context retries still return:
+      - `406`
+      - `code=-1`
+      - `success=false`
+  - implication:
+    - the browser’s automatic `note_info` path depends on more than `_webmsxyw` output alone
+- Xsec header note:
+  - the current page environment exposes:
+    - `xsecappid`
+    - `xsecappvers`
+    - `xsecplatform`
+  - `pageSignedFetch` now also retries `note_info` with:
+    - `_webmsxyw`-generated `x-s / x-t`
+    - plus those `xsec*` headers
+  - latest verified result:
+    - `fetchWithXsecResult` => `406`
+    - `xhrWithXsecResult` => `406`
+  - implication:
+    - the automatic browser request path still depends on something beyond `_webmsxyw` and the visible `xsec*` globals
+- JS hook note:
+  - `browser-note-info` now also installs page-level hooks for:
+    - `window.fetch`
+    - `XMLHttpRequest`
+  - it records hooks seen before the active probe:
+    - `preSignedJsRequestHooks`
+  - and hooks seen after the active probe:
+    - `jsRequestHooks`
+  - latest verified result:
+    - automatic network `note_info` is present
+    - but `preSignedJsRequestHooks` is empty
+    - `automaticRequestBypassedJsHooks = true`
+  - implication:
+    - the automatic request does not appear to originate from a normal JS `fetch/XHR` path we can monkey patch in page script
+- CDP initiator note:
+  - `browser-note-info` now also records Chromium CDP `Network.requestWillBeSent` initiator data
+  - latest verified result:
+    - automatic `note_info` is `script`-initiated and `XHR`-typed
+    - the stack summary includes:
+      - `dispatchXhrRequest`
+      - `xhrAdapter`
+      - `dispatchRequest`
+      - `xhrByBridgeAdapter`
+      - `library-axios.4d38c57d.js`
+      - `vendor-dynamic.1f7e7d2e.js`
+  - implication:
+    - the request is script-driven
+    - but it goes through Xiaohongshu’s internal axios/bridge adapter path rather than a simple exposed `window.fetch` / `window.axios`
+- Online-reference note:
+  - I checked public GitHub implementations before continuing local experiments
+  - one concrete reference was `Cloxl/xhshow`, which treats:
+    - `a1`
+    - `web_session`
+    - `webId`
+    - `x-s-common`
+    as core signature inputs
+  - based on that, the worker now records `detailApiProbe.cookieSignatureInputs`
+  - latest verified result in the current environment:
+    - `a1` present
+    - `web_session` present
+    - `webId` present
+    - `allRequiredPresent = true`
+  - implication:
+    - the current failure is not explained by missing basic signing cookies
+- Full-header replay note:
+  - guided by the same online-signing direction, `pageSignedFetch` now also retries `note_info` with the full captured automatic request headers
+  - this includes:
+    - `x-s`
+    - `x-t`
+    - `x-s-common`
+    - `x-xray-traceid`
+    - `x-b3-traceid`
+    - `xsec*` where available
+  - latest verified result:
+    - generated `x-s/x-t` only => `406`
+    - generated `x-s/x-t + xsec*` => `406`
+    - full captured automatic headers => `461` with `code=0`, `success=true`, but empty `data`
+  - implication:
+    - full signature context is important
+    - but there is still an upper-layer business/visibility restriction beyond pure header correctness
+- Feed-endpoint probe note:
+  - `detailApiProbe` now also explicitly tests:
+    - `GET /api/sns/web/v1/feed?note_id=...`
+    - `GET /api/sns/web/v1/feed?source_note_id=...`
+    - `POST /api/sns/web/v1/feed` with `{ note_id }`
+  - latest verified result:
+    - GET variants => `404`
+    - POST variant => `406`
+  - implication:
+    - `web/v1/feed` is not currently behaving like a viable note-detail endpoint in this flow
+- Search-modal enrichment note:
+  - the worker now includes `enrichSamplesFromSearchModal(page, samples, keyword)` before the older detail-page fallback
+  - this path was based on public DOM-first implementations such as `RedNote-MCP`
+  - key implementation detail:
+    - do not click the hidden `/explore/{noteId}` anchor directly
+    - instead find `section.note-item` containing that hidden anchor
+    - then click the visible `a.cover.mask.ld` or `a.title` inside the section
+  - modal extraction currently uses selectors like:
+    - `#detail-title`
+    - `#detail-desc .note-text`
+    - `.author-container .username`
+    - `.interact-container .like-wrapper/.chat-wrapper/.collect-wrapper .count`
+  - latest verified result:
+    - `modalEnrichment.modalOpenCount = 5`
+    - `modalEnrichment.detailEnrichedCount = 5`
+    - overall `detailEnrichedCount = 5`
+  - implication:
+    - real note body text is now available through the search-page modal path
+    - `note_info` reverse-engineering remains useful for robustness and structure, but it is no longer the only available route for正文补全
+- Media-resource note:
+  - the sample model now includes:
+    - `mediaImageUrls`
+    - `mediaVideoUrls`
+  - Prisma mirrors these as:
+    - `mediaImageUrlsJson`
+    - `mediaVideoUrlsJson`
+  - both search-modal enrichment and detail-page fallback now extract:
+    - `.media-container img`
+    - `.media-container video`
+    - plus `video[poster]` as an image fallback
+  - blob-local video URLs are intentionally filtered out because they are not reusable outside the browser session
+  - latest verified result:
+    - first real sample includes a reusable CDN image URL
+    - `mediaVideoUrls` is empty instead of polluted with `blob:` URLs
+- Console UX note:
+  - `App.tsx` now surfaces the richer sample fields directly in the `Samples` panel
+  - the UI now renders:
+    - `contentText/contentSummary`
+    - `authorName`
+    - `publishTime`
+    - `coverImageUrl`
+    - media counts from `mediaImageUrls/mediaVideoUrls`
+    - source URL
+  - `Collection Jobs` also now displays `modalEnrichment.modalOpenCount` and `detailEnrichedCount`
+- Stable-id note:
+  - samples now formally store:
+    - `platformContentId`
+    - `authorId`
+  - the worker maps:
+    - note id -> `platformContentId`
+    - upstream user id -> `authorId`
+  - modal-route publish text now passes through shared `normalizeTimestampValue()` before persistence
+  - latest verified result:
+    - first real sample includes both IDs and an ISO-normalized publish time
+- Analysis-input note:
+  - `AnalyzeService` no longer limits itself to title/body/engagement
+  - the sample fetch path now also includes:
+    - `platformContentId`
+    - `authorId`
+    - `publishTime`
+    - `sourceUrl`
+    - `coverImageUrl`
+    - `mediaImageUrls`
+    - `mediaVideoUrls`
+  - analysis input is now enriched with:
+    - `author`
+    - `publishing`
+    - `contentFormat`
+    - `media`
+  - `inferContentFormat()` currently classifies content into:
+    - `video-note`
+    - `multi-image-note`
+    - `single-image-note`
+    - `long-text-note`
+    - `text-first-note`
+  - prompt version is now:
+    - `analyze.v3.llm`
+  - the local fallback analyzer also now injects content-format and publish-time signals into:
+    - `trendTags`
+    - `viralReasons`
+    - `keyPoints`
+- Pattern-input note:
+  - `PatternsService` now passes richer sample context into the Pattern Engine:
+    - `platformContentId`
+    - `contentText`
+    - `authorName`
+    - `authorId`
+    - `publishTime`
+    - `sourceUrl`
+    - `coverImageUrl`
+    - media counts
+  - prompt version is now:
+    - `patterns.v3.llm`
+  - the local fallback pattern builder now adjusts:
+    - `trendSummary`
+    - `applicableScenarios`
+    based on whether the sample set includes video and whether it contains freshness signals
+- Collector-provider note:
+  - the collection layer now has a formal provider contract:
+    - `CollectorProviderId`
+    - `CollectorContext`
+    - `CollectorVerificationResult`
+    - `CollectorReadiness`
+    - `ViralLabCollectorProvider`
+  - current provider ids are:
+    - `mock-local`
+    - `xiaohongshu-playwright`
+    - `xiaohongshu-managed`
+  - `CollectService` now resolves providers through `getCollectorProvider()` instead of hardcoding collector branches in the runtime path
+  - `createJob()` now accepts an optional `providerId`
+  - `getCapabilities()` now exposes an additional `managed` slot
+  - `xiaohongshu-managed` is currently a stub that returns `provider-not-configured`
+  - purpose:
+    - create a future landing zone for XCrawl-like or other managed scraping integrations without reworking the job runtime model again
+- Collector-UI note:
+  - `App.tsx` now exposes `providerId` in the collection form
+  - current real-mode options are:
+    - `xiaohongshu-playwright`
+    - `xiaohongshu-managed`
+  - switching collector mode automatically resets the default provider to a matching value
+  - the readiness panel now includes a dedicated `Managed Collector` card
+  - collection jobs now show `metadata.provider` directly in the list, making it easier to compare self-hosted vs managed runs once the latter is implemented
+- Managed-provider note:
+  - `xiaohongshu-managed` now uses XCrawl's official scrape-style interface rather than returning a placeholder error only
+  - current integration assumptions are based on the public XCrawl docs:
+    - `POST {XCRAWL_BASE_URL}/scrape`
+    - bearer auth via `XCRAWL_API_KEY`
+    - `output.formats = ["json", "screenshot"]`
+    - `json.prompt + json_schema` for structured extraction
+  - current extraction target is the Xiaohongshu `search_result` page for a keyword
+  - the provider maps remote structured items back into the local `CollectedSampleInput` shape
+  - this means the provider is now code-complete enough for live testing once real XCrawl credentials are supplied
+  - the normalization layer is intentionally defensive:
+    - it can now extract item arrays from multiple shapes such as `items/results/notes/cards/list`
+    - it supports nested `data.*` wrappers
+    - it also normalizes common alias fields for title/body/author/source/media/tag inputs
+  - count parsing understands abbreviated values like:
+    - `1.2万`
+    - `2.5k`
+  - metadata now includes:
+    - `rawItemCount`
+    - `normalizedItemCount`
+    to make live provider debugging easier once XCrawl credentials are available
+  - the provider now also has a second extraction route:
+    - if `json` produces no usable items, it falls back to `links + markdown/html`
+    - `/explore/{noteId}` links are converted into skeletal samples
+    - `markdown/html` text is truncated into `contentSummary`
+  - this fallback is now backed by real requested output formats:
+    - `json`
+    - `markdown`
+    - `html`
+    - `links`
+    - `screenshot`
+  - and it no longer depends only on XCrawl's structured `links` output:
+    - markdown links are parsed directly
+    - html anchor tags are parsed directly
+  - extra metadata added for this path:
+    - `fallbackItemCount`
+    - `fallbackUsed`
+    - `markdownCaptured`
+    - `htmlCaptured`
+    - `linksCaptured`
+- Sample-provider note:
+  - sample APIs now expose a derived `provider` field
+  - source of truth:
+    - parent collection-job metadata
+  - this is intentionally derived instead of stored on the sample record itself, so existing data does not need a schema migration
+  - the app uses this to:
+    - show provider next to each sample
+    - aggregate sample counts by provider in the workspace
+- Provider-diagnostics note:
+  - the app now also surfaces job-level provider quality metrics
+  - this is intentionally UI-only aggregation for now; no schema change was needed
+  - metrics currently exposed from job metadata:
+    - `rawItemCount`
+    - `normalizedItemCount`
+    - `fallbackItemCount`
+    - `fallbackUsed`
+    - `linksCaptured`
+    - `markdownCaptured`
+    - `htmlCaptured`
+  - purpose:
+    - compare self-hosted vs managed collector behavior quickly once both paths are producing samples
+- Workflow-provider note:
+  - workflow payloads now accept `providerId`
+  - this allows the `latest-real-pipeline` flow to choose a real-job source by provider, not only by recency
+  - source resolution now filters on `job.metadata.provider`
+  - the app now has a dedicated workflow-scope form for:
+    - `providerId`
+    - `sampleLimit`
+    - `forceReanalyze`
+  - provider-scoped experiments can therefore be run without depending on the collection form state
+- Sample-quality note:
+  - sample APIs now derive:
+    - `qualityScore`
+    - `qualityFlags`
+  - these are response-time computed fields, intentionally kept out of the persistent schema for now
+  - current quality checks are designed for the self-hosted Xiaohongshu path and focus on:
+    - missing stable ids
+    - weak body/summary
+    - missing author / publish-time
+    - missing cover/media/tags
+    - non-canonical source URL
+  - the app now surfaces these in two places:
+    - per-sample quality pill on the sample card
+    - aggregated `Sample Quality` panel for quick triage
+- Collector-normalization note:
+  - the self-hosted worker now has shared normalization helpers for:
+    - relative publish time parsing
+    - Chinese date-text parsing
+    - low-noise tag merging
+  - this is intentionally applied before data reaches Analyze/Pattern, so the AI layer gets cleaner time/tag signals without prompt-only cleanup
+  - current relative-time support includes:
+    - `刚刚 / 刚才`
+    - `x分钟前 / x小时前 / x天前`
+    - `今天 / 昨天 / 前天`
+  - current tag cleanup removes:
+    - date-like labels
+    - generic platform words
+    - obvious time-noise tokens
+- Quality-selection note:
+  - sample-quality logic now has a shared helper module:
+    - `api/src/samples/sample-quality.ts`
+  - this avoids a split-brain situation where:
+    - the UI shows quality
+    - but workflow/analyze still pick samples blindly
+  - current usage:
+    - `AnalyzeService` default sample selection is quality-first within a recent candidate window
+    - `WorkflowService` job sample selection is quality-first, then engagement, then recency
+  - workflow result hydration now also includes sample `qualityScore`
+  - the app uses this to show whether a completed pipeline was built on strong or weak input samples
+- Workflow-diagnostics note:
+  - workflow result hydration now also derives a lightweight `diagnostics` object
+  - purpose:
+    - avoid opening multiple panels just to understand whether a pipeline run was weak because of:
+      - weak samples
+      - AI fallback
+      - thin generated output
+  - current fields:
+    - sample quality aggregate
+    - analysis fallback breakdown
+    - pattern/generate source
+    - pattern confidence
+    - generated title/tag counts
+  - a verdict layer now sits on top of those diagnostics:
+    - `strong`
+    - `usable`
+    - `review`
+  - the goal is not perfect scoring; it is fast operator triage
+  - the verdict is now also persisted back into workflow-job metadata so list views can expose it without re-hydrating the full result block first
+  - a subset of the diagnostics summary is now persisted alongside that verdict for the same reason
+- Workflow-review note:
+  - the app now treats the workflow panel as a compact end-to-end review surface
+  - this is intentionally redundant with lower pattern/draft sections:
+    - the lower sections remain useful for historical browsing
+    - the workflow panel is optimized for evaluating the most recent pipeline run in one place
+  - the latest workflow result is also linked back to those lower sections:
+    - snapshot cards include anchor links
+    - matching historical cards are visually highlighted
+  - this linking now covers:
+    - samples
+    - analyses
+    - patterns
+    - drafts
+- Workflow-operations note:
+  - the latest workflow configuration can now be replayed directly
+  - source of truth:
+    - latest stored workflow job metadata
+  - this avoids duplicating scope state in the UI and keeps reruns aligned with the last executed configuration
+- Samples panel note:
+  - the main sample-review surface now intentionally shows the latest 10 entries
+  - reason:
+    - for real Xiaohongshu verification runs, 5 entries were not enough to judge result quality at a glance
+- Real collector validation note:
+  - a new live run was executed for:
+    - keyword: `AI教育`
+    - sort: `latest`
+    - targetCount: `10`
+    - provider: `xiaohongshu-playwright`
+  - result:
+    - collection failed with upstream search auth rejection (`code=-101`)
+    - existing diagnostics pipeline worked as designed and surfaced the failure in metadata/artifacts
+  - implication:
+    - the next real-run prerequisite is refreshing the Xiaohongshu cookie, not collector code surgery
+- Bilingual front-end note:
+  - UI locale is now stored in `localStorage` under `virallab-locale`
+  - default behavior:
+    - anything other than explicit `en` falls back to `zh`
+  - translation approach:
+    - lightweight in-component `t(zh, en)` helper for major static copy
+    - shared formatters for:
+      - status text
+      - AI source badges
+      - quality flags
+      - workflow verdict labels
+      - top overview stat labels/notes
+  - intentionally not translated:
+    - user-generated content
+    - collected Xiaohongshu titles/body text
+    - LLM-generated draft body text
+    - pattern descriptions
