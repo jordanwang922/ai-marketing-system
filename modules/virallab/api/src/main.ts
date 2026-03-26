@@ -6,6 +6,7 @@ import { AppModule } from "./app.module";
 
 const loadEnvironment = () => {
   const candidates = [
+    path.resolve(__dirname, "../.env"),
     path.resolve(process.cwd(), ".env"),
     path.resolve(process.cwd(), "../../RiskRadar/server/.env"),
   ];

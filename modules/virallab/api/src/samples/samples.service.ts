@@ -3,6 +3,17 @@ import { ViralLabStoreService } from "../store/store.service";
 import { PrismaService } from "../prisma.service";
 import { computeSampleQuality, parseJsonArray } from "./sample-quality";
 
+const toSortableTime = (value: unknown) => {
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  return 0;
+};
+
 @Injectable()
 export class SamplesService {
   constructor(
@@ -27,7 +38,7 @@ export class SamplesService {
       success: true,
       items: db.samples
         .slice()
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .sort((a, b) => toSortableTime(b.createdAt) - toSortableTime(a.createdAt))
         .map((item) => {
           const job = db.collectionJobs.find((candidate) => candidate.id === item.jobId);
           return this.mapSampleRecord(item, job?.metadataJson || null);
@@ -89,6 +100,7 @@ export class SamplesService {
       mediaImageUrls?: string[];
       mediaVideoUrlsJson?: string | null;
       mediaVideoUrls?: string[];
+      parsedPayloadJson?: string | null;
       status: string;
       createdAt: Date | string;
       updatedAt: Date | string;
@@ -110,9 +122,15 @@ export class SamplesService {
     const coverImageUrl = item.coverImageUrl || "";
     const mediaImageUrls = Array.isArray(item.mediaImageUrls) ? item.mediaImageUrls : parseJsonArray(item.mediaImageUrlsJson || null);
     const mediaVideoUrls = Array.isArray(item.mediaVideoUrls) ? item.mediaVideoUrls : parseJsonArray(item.mediaVideoUrlsJson || null);
+    const parsedPayload = this.parseMetadata(item.parsedPayloadJson || null);
+    const hasVideoMedia = Boolean(parsedPayload?.hasVideoMedia) || mediaVideoUrls.length > 0;
+    const resolvedContentText =
+      typeof parsedPayload?.resolvedContentText === "string" && parsedPayload.resolvedContentText
+        ? parsedPayload.resolvedContentText
+        : contentText;
     const { qualityFlags, qualityScore } = computeSampleQuality({
       platformContentId: item.platformContentId || "",
-      contentText,
+      contentText: resolvedContentText,
       contentSummary,
       authorName,
       authorId,
@@ -135,6 +153,16 @@ export class SamplesService {
       title: item.title,
       contentText,
       contentSummary,
+      contentType: hasVideoMedia || parsedPayload?.contentType === "video" ? "video" : "image",
+      contentFormat:
+        typeof parsedPayload?.contentFormat === "string"
+          ? parsedPayload.contentFormat
+          : hasVideoMedia || mediaVideoUrls.length
+            ? "video-note"
+            : mediaImageUrls.length > 1
+              ? "multi-image-note"
+              : "single-image-note",
+      longImageCandidate: Boolean(parsedPayload?.longImageCandidate),
       authorName,
       authorId,
       publishTime,
@@ -147,6 +175,23 @@ export class SamplesService {
       coverImageUrl,
       mediaImageUrls,
       mediaVideoUrls,
+      hasVideoMedia,
+      ocrTextRaw: typeof parsedPayload?.ocrTextRaw === "string" ? parsedPayload.ocrTextRaw : "",
+      ocrTextClean: typeof parsedPayload?.ocrTextClean === "string" ? parsedPayload.ocrTextClean : "",
+      transcriptText: typeof parsedPayload?.transcriptText === "string" ? parsedPayload.transcriptText : "",
+      transcriptSegments: Array.isArray(parsedPayload?.transcriptSegments)
+        ? parsedPayload.transcriptSegments.map((entry) => String(entry))
+        : [],
+      frameOcrTexts: Array.isArray(parsedPayload?.frameOcrTexts)
+        ? parsedPayload.frameOcrTexts.map((entry) => String(entry))
+        : [],
+      resolvedContentText,
+      resolvedContentSource:
+        parsedPayload?.resolvedContentSource === "image-ocr" ||
+        parsedPayload?.resolvedContentSource === "video-frame-ocr" ||
+        parsedPayload?.resolvedContentSource === "merged"
+          ? parsedPayload.resolvedContentSource
+          : "note-body",
       qualityScore,
       qualityFlags,
       status: item.status as "active",

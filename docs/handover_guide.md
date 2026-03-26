@@ -368,6 +368,26 @@ This project is currently in a transition phase from "Development" to "Deploymen
   - 主要静态界面都已完成双语化
   - 业务内容仍保留原始中文/原文，不建议在 UI 层强制翻译模型产出
   - 下一步更值得做的是用这批 richer samples 重跑真实 pipeline，观察 Pattern 和 Generate 质量是否明显提升
+  - 最新一轮已把小红书采集正式拆成“图文/视频”两类输入，采集表单已新增：
+    - 排序依据扩展
+    - 笔记类型
+    - 发布时间
+  - 当前多模态实现状态：
+    - 图文：
+      - 普通图文：直接使用页面正文
+      - 长图文：已接本机 Vision OCR，结果写入 `ocrText*` 和 `resolvedContentText`
+    - 视频：
+      - V1 已接页面帧 OCR
+      - `frameOcrTexts / transcriptText / transcriptSegments` 已有数据结构和 worker 写入
+      - 但真实 ASR 仍未完成，因为当前环境无 `ffmpeg / whisper`
+  - 当前下游消费情况：
+    - `Samples` 面板已经能展示 resolved 文本
+    - 样本质量评分已优先考虑 `resolvedContentText`
+    - `AnalyzeService` 已优先读取 Prisma `parsedPayloadJson.resolvedContentText`
+  - 如果下一位继续推进视频链，应优先做：
+    1. 引入真正的音频提取能力
+    2. 接 Whisper/ASR
+    3. 再补视频关键帧抽样策略
   - 下一轮应优先验证：
     - `vendor-dynamic -> xhrByBridgeAdapter -> axios` 这条链里是否还会打别的 note detail 接口
     - 是否存在比 `h5/v1/note_info` 返回更完整字段的 detail API

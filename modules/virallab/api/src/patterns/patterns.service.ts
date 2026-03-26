@@ -4,6 +4,17 @@ import { ViralLabPattern } from "../store/types";
 import { ViralLabLlmService } from "../llm/llm.service";
 import { PrismaService } from "../prisma.service";
 
+const toSortableTime = (value: unknown) => {
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  return 0;
+};
+
 @Injectable()
 export class PatternsService {
   constructor(
@@ -27,7 +38,7 @@ export class PatternsService {
     const db = await this.store.read();
     return {
       success: true,
-      items: db.patterns.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      items: db.patterns.slice().sort((a, b) => toSortableTime(b.createdAt) - toSortableTime(a.createdAt)),
     };
   }
 

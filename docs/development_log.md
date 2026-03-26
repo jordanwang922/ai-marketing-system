@@ -164,3 +164,12 @@
 - **第七十七轮增强**：补上 workflow 的重跑动作。当前 API 已新增 `POST /workflow/jobs/rerun-latest`，会直接复用最近一条 workflow job 里记录的 `targetJobId / providerId / sampleLimit / forceReanalyze / goal / tone / targetAudience` 重新排一条新任务；前端 `Workflow Jobs` 卡片也已新增 `Re-run Latest Workflow` 按钮。这样后面验证自研链路的改动时，不需要每次手工重新填写 workflow scope。经验证，API 与 App build 均通过
 - **第七十八轮增强**：把样本主展示面板扩成最新 10 条，便于直接审核一整屏真实样本。同时完成了一次真实 `AI教育` latest 10 联调，任务 `job_0e805361` 已明确暴露出当前存储的小红书 Cookie 失效问题：搜索接口返回 `code=-101`、`msg=无登录信息，或登录信息为空`。这轮没有伪造新数据，而是确认现有失败诊断链路可用，并保留已有 `AI教育` 样本作为当前展示内容。经验证，前端 build 通过，API 在 `VIRALLAB_ENABLE_REAL_COLLECTOR=true` 下启动通过
 - **第七十九轮增强**：前端控制台改为中英双语，并将默认语言切换为中文。当前登录页和已登录工作台侧边栏均已支持 `中文 / EN` 切换；主导航、工作流、质量诊断、采集器状态、采集任务、样本、分析、Pattern、生成和顶部统计卡片等主要静态界面文案已完成双语化。业务原始内容与模型输出保持原文，不做强翻译。经验证，前端 build 与 API build 均通过
+- **第八十轮增强**：按新设计补齐小红书采集筛选和多模态字段。采集表单与后端任务参数现已支持 `排序依据扩展 + 笔记类型 + 发布时间`；Xiaohongshu worker 已接入图文/视频分流、本地排序、本地时间窗口过滤，同时样本结构新增 `contentType/contentFormat/ocrText/transcript/frameOcr/resolvedContentText` 一组多模态字段。长图文已接入本机 Vision OCR，视频 V1 已接入页面帧 OCR 并把结果回填到 `resolvedContentText`，Analyze 已开始优先消费融合后的正文。经验证，worker `node --check`、Vision OCR helper、API build、App build 均通过
+- **第八十一轮增强**：修正小红书真实筛选不一致问题。经过 live 调试确认，旧逻辑仍主要依赖“默认搜索结果 + 本地 sort/filter”，这会导致 ViralLab 中的 `最多点赞 / 图文 / 一周内` 与小红书页面真实结果不一致。当前 worker 已改为捕获 `/api/sns/web/v1/search/filter` 返回的真实筛选定义，并拦截浏览器发出的 `/api/sns/web/v1/search/notes` 请求，在放行前重写 `sort / note_type / filters`。已确认的 live 映射包括：`图文 -> note_type=2 / 普通笔记`、`视频 -> note_type=1 / 视频笔记`、`最多点赞 -> popularity_descending`、`一周内 -> filter_note_time=一周内`。经验证，重写后真实页面结果已明显切换到图文且时间范围收窄，worker `node --check`、API build、App build 均通过
+
+- **第八十二轮增强**：继续收口 Xiaohongshu 样本审核体验。`Samples` 卡片现在会直接显示标题、作者、发布日期（仅保留年月日）、点赞/评论/收藏/转发四个互动指标，以及一条“小红书搜索提示”，便于用户回到小红书核对原帖；同时保留媒体数量与多模态正文展示，降低人工判断成本。
+
+- **第八十三轮增强**：继续修正样本审核区的误导性展示。当前 Samples 面板默认优先展示“当前最新采集任务”的样本，不再优先混合历史样本；同时补上类型兜底判定和互动数据千分位格式，避免用户把旧任务里的视频误判成当前图文结果。
+
+- **第八十四轮增强**：把“先点小红书真实筛选，再抓结果”的 UI 驱动链接进 worker。当前 real collector 会先在浏览器里按用户选择真实点击：`图文/视频` 顶部 tab，以及 `筛选 -> 最多点赞/最新/一周内/... -> 收起`，再继续做列表提取、详情补全和 OCR；不再只依赖请求改写和本地后过滤。
+- **第八十五轮增强**：补上“小红书扫码登录 -> 自动接管 Cookie -> 自动开始抓取”的主流程。API 侧新增扫码会话接口，动态复用 worker 目录里的 Playwright 打开可见小红书窗口；前端第 1 步改成推荐扫码主路径，用户可先填采集条件，再点击打开扫码窗口，扫码完成后由系统自动保存 Cookie、验证，并继续创建当前采集任务。手动 Cookie 输入已降级为备用折叠入口。经验证，API build、App build 和 Playwright 运行时加载检查均通过

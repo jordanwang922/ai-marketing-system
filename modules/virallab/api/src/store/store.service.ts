@@ -3,13 +3,60 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import * as bcrypt from "bcryptjs";
-import { ViralLabDatabase, ViralLabUser } from "./types";
+import {
+  ViralLabAnalysis,
+  ViralLabCollectionJob,
+  ViralLabDatabase,
+  ViralLabGeneratedContent,
+  ViralLabGenerationJob,
+  ViralLabPattern,
+  ViralLabPlatformAccount,
+  ViralLabSample,
+  ViralLabUser,
+} from "./types";
 import { PrismaService } from "../prisma.service";
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const DATA_FILE = path.join(DATA_DIR, "virallab-mvp.json");
 
 const now = () => new Date().toISOString();
+
+const parseJsonArray = (value: string | null | undefined): string[] => {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map((item) => String(item)) : [];
+  } catch {
+    return [];
+  }
+};
+
+const parseJsonObject = (value: string | null | undefined): Record<string, unknown> | null => {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const safeIso = (value: Date | string | null | undefined) => {
+  if (!value) {
+    return null;
+  }
+
+  const next = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(next.getTime()) ? null : next.toISOString();
+};
 
 const createDemoUser = async (): Promise<ViralLabUser> => {
   const timestamp = now();
@@ -60,8 +107,25 @@ const normalizeSamples = (samples: ViralLabDatabase["samples"] = []) =>
     ...item,
     platformContentId: item.platformContentId ?? "",
     authorId: item.authorId ?? "",
+    contentType: item.contentType ?? (Array.isArray(item.mediaVideoUrls) && item.mediaVideoUrls.length ? "video" : "image"),
+    hasVideoMedia: item.hasVideoMedia ?? (Array.isArray(item.mediaVideoUrls) && item.mediaVideoUrls.length > 0),
+    contentFormat:
+      item.contentFormat ??
+      (Array.isArray(item.mediaVideoUrls) && item.mediaVideoUrls.length
+        ? "video-note"
+        : Array.isArray(item.mediaImageUrls) && item.mediaImageUrls.length > 1
+          ? "multi-image-note"
+          : "single-image-note"),
+    longImageCandidate: item.longImageCandidate ?? false,
     mediaImageUrls: Array.isArray(item.mediaImageUrls) ? item.mediaImageUrls.map((value) => String(value)) : [],
     mediaVideoUrls: Array.isArray(item.mediaVideoUrls) ? item.mediaVideoUrls.map((value) => String(value)) : [],
+    ocrTextRaw: item.ocrTextRaw ?? "",
+    ocrTextClean: item.ocrTextClean ?? "",
+    transcriptText: item.transcriptText ?? "",
+    transcriptSegments: Array.isArray(item.transcriptSegments) ? item.transcriptSegments.map((value) => String(value)) : [],
+    frameOcrTexts: Array.isArray(item.frameOcrTexts) ? item.frameOcrTexts.map((value) => String(value)) : [],
+    resolvedContentText: item.resolvedContentText ?? item.contentText ?? "",
+    resolvedContentSource: item.resolvedContentSource ?? "note-body",
   }));
 
 @Injectable()
@@ -84,7 +148,13 @@ export class ViralLabStoreService implements OnModuleInit {
   async read(): Promise<ViralLabDatabase> {
     await this.ensureInitialized();
     const raw = await fs.readFile(DATA_FILE, "utf8");
-    return JSON.parse(raw) as ViralLabDatabase;
+    try {
+      return JSON.parse(raw) as ViralLabDatabase;
+    } catch {
+      const recovered = await this.recoverSnapshotFromPrisma();
+      await fs.writeFile(DATA_FILE, JSON.stringify(recovered, null, 2));
+      return recovered;
+    }
   }
 
   async write(data: ViralLabDatabase, options?: { mirrorToPrisma?: boolean }) {
@@ -139,7 +209,16 @@ export class ViralLabStoreService implements OnModuleInit {
     }
 
     const raw = await fs.readFile(DATA_FILE, "utf8");
-    const parsed = JSON.parse(raw) as Partial<ViralLabDatabase>;
+    let parsed: Partial<ViralLabDatabase>;
+
+    try {
+      parsed = JSON.parse(raw) as Partial<ViralLabDatabase>;
+    } catch {
+      const recovered = await this.recoverSnapshotFromPrisma();
+      await fs.writeFile(DATA_FILE, JSON.stringify(recovered, null, 2));
+      await this.syncSnapshotToPrisma(recovered);
+      return;
+    }
     const needsRewrite =
       !parsed.platformAccounts ||
       parsed.platformAccounts.some(
@@ -160,8 +239,19 @@ export class ViralLabStoreService implements OnModuleInit {
         (item) =>
           typeof item.platformContentId === "undefined" ||
           typeof item.authorId === "undefined" ||
+          typeof item.contentType === "undefined" ||
+          typeof item.hasVideoMedia === "undefined" ||
+          typeof item.contentFormat === "undefined" ||
+          typeof item.longImageCandidate === "undefined" ||
           !Array.isArray(item.mediaImageUrls) ||
-          !Array.isArray(item.mediaVideoUrls),
+          !Array.isArray(item.mediaVideoUrls) ||
+          !Array.isArray(item.transcriptSegments) ||
+          !Array.isArray(item.frameOcrTexts) ||
+          typeof item.ocrTextRaw === "undefined" ||
+          typeof item.ocrTextClean === "undefined" ||
+          typeof item.transcriptText === "undefined" ||
+          typeof item.resolvedContentText === "undefined" ||
+          typeof item.resolvedContentSource === "undefined",
       ) ||
       !parsed.workflowJobs;
 
@@ -301,6 +391,20 @@ export class ViralLabStoreService implements OnModuleInit {
             title: sample.title,
             contentText: sample.contentText,
             contentSummary: sample.contentSummary,
+            rawPayloadJson: JSON.stringify(sample),
+            parsedPayloadJson: JSON.stringify({
+              contentType: sample.contentType,
+              hasVideoMedia: sample.hasVideoMedia,
+              contentFormat: sample.contentFormat,
+              longImageCandidate: sample.longImageCandidate,
+              ocrTextRaw: sample.ocrTextRaw,
+              ocrTextClean: sample.ocrTextClean,
+              transcriptText: sample.transcriptText,
+              transcriptSegments: sample.transcriptSegments || [],
+              frameOcrTexts: sample.frameOcrTexts || [],
+              resolvedContentText: sample.resolvedContentText,
+              resolvedContentSource: sample.resolvedContentSource,
+            }),
             authorName: sample.authorName,
             authorId: sample.authorId,
             publishTime: sample.publishTime ? new Date(sample.publishTime) : null,
@@ -452,5 +556,255 @@ export class ViralLabStoreService implements OnModuleInit {
         });
       }
     });
+  }
+
+  private async recoverSnapshotFromPrisma(): Promise<ViralLabDatabase> {
+    if (!this.prisma.isEnabled()) {
+      throw new Error("Unable to recover ViralLab snapshot: Prisma persistence is not enabled.");
+    }
+
+    await this.prisma.$connect();
+
+    const [
+      users,
+      sessions,
+      platformAccounts,
+      collectionJobs,
+      samples,
+      analyses,
+      patterns,
+      patternSources,
+      generationJobs,
+      generatedContents,
+      auditLogs,
+    ] = await Promise.all([
+      this.prisma.user.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.userSession.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.platformAccount.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.collectionJob.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.contentSample.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.analysisResult.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.pattern.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.patternSource.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.generationJob.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.generatedContent.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.auditLog.findMany({ orderBy: { createdAt: "asc" } }),
+    ]);
+
+    const patternSourceMap = new Map<string, { analysisIds: string[]; sampleIds: string[] }>();
+    for (const source of patternSources) {
+      const current = patternSourceMap.get(source.patternId) || { analysisIds: [], sampleIds: [] };
+      current.analysisIds.push(source.analysisId);
+      current.sampleIds.push(source.sampleId);
+      patternSourceMap.set(source.patternId, current);
+    }
+
+    return {
+      users: users.map((user) => ({
+        id: user.id,
+        email: user.email,
+        passwordHash: user.passwordHash,
+        displayName: user.displayName,
+        status: "active",
+        lastLoginAt: safeIso(user.lastLoginAt),
+        createdAt: user.createdAt.toISOString(),
+        updatedAt: user.updatedAt.toISOString(),
+      })),
+      sessions: sessions.map((session) => ({
+        id: session.id,
+        userId: session.userId,
+        token: session.token,
+        createdAt: session.createdAt.toISOString(),
+        expiredAt: session.expiredAt.toISOString(),
+      })),
+      platformAccounts: platformAccounts.map((account) => ({
+        id: account.id,
+        userId: account.userId,
+        platform: "xiaohongshu",
+        accountName: account.accountName || "",
+        cookieBlob: account.cookieBlob || "",
+        cookieStatus: (account.cookieStatus as ViralLabPlatformAccount["cookieStatus"]) || "missing",
+        lastVerifiedAt: safeIso(account.lastVerifiedAt),
+        verificationMessage: account.verificationMessage || null,
+        verificationMetadataJson: account.verificationMetadataJson || null,
+        createdAt: account.createdAt.toISOString(),
+        updatedAt: account.updatedAt.toISOString(),
+      })),
+      collectionJobs: collectionJobs.map((job) => {
+        const metadata = parseJsonObject(job.metadataJson);
+        const noteType =
+          typeof metadata?.noteType === "string" ? (metadata.noteType as ViralLabCollectionJob["noteType"]) : "all";
+        const publishWindow =
+          typeof metadata?.publishWindow === "string"
+            ? (metadata.publishWindow as ViralLabCollectionJob["publishWindow"])
+            : "all";
+
+        return {
+          id: job.id,
+          userId: job.userId,
+          platform: "xiaohongshu",
+          keyword: job.keyword,
+          sortBy: job.sortBy as ViralLabCollectionJob["sortBy"],
+          noteType,
+          publishWindow,
+          collectorMode: job.collectorMode as ViralLabCollectionJob["collectorMode"],
+          targetCount: job.targetCount,
+          status: job.status as ViralLabCollectionJob["status"],
+          progress: job.progress,
+          startedAt: safeIso(job.startedAt),
+          finishedAt: safeIso(job.finishedAt),
+          errorMessage: job.errorMessage || null,
+          metadataJson: job.metadataJson || null,
+          createdAt: job.createdAt.toISOString(),
+          updatedAt: job.updatedAt.toISOString(),
+        };
+      }),
+      samples: normalizeSamples(
+        samples.map((sample) => {
+          const rawPayload = parseJsonObject(sample.rawPayloadJson);
+          const parsedPayload = parseJsonObject(sample.parsedPayloadJson);
+          const mergedPayload = { ...(rawPayload || {}), ...(parsedPayload || {}) };
+
+          return {
+            id: sample.id,
+            jobId: sample.jobId || "",
+            userId: sample.userId,
+            platform: "xiaohongshu",
+            collectorMode: sample.collectorMode as ViralLabSample["collectorMode"],
+            keyword: sample.keyword || "",
+            platformContentId: sample.platformContentId || "",
+            title: sample.title || "",
+            contentText: sample.contentText || "",
+            contentSummary: sample.contentSummary || "",
+            contentType: ((mergedPayload.contentType as string) || "image") as ViralLabSample["contentType"],
+            contentFormat: ((mergedPayload.contentFormat as string) || "single-image-note") as ViralLabSample["contentFormat"],
+            longImageCandidate: Boolean(mergedPayload.longImageCandidate),
+            authorName: sample.authorName || "",
+            authorId: sample.authorId || "",
+            publishTime: safeIso(sample.publishTime) || "",
+            likeCount: sample.likeCount,
+            commentCount: sample.commentCount,
+            collectCount: sample.collectCount,
+            shareCount: sample.shareCount,
+            tags: parseJsonArray(sample.tagsJson),
+            sourceUrl: sample.sourceUrl || "",
+            coverImageUrl: sample.coverImageUrl || "",
+            mediaImageUrls: parseJsonArray(sample.mediaImageUrlsJson),
+            mediaVideoUrls: parseJsonArray(sample.mediaVideoUrlsJson),
+            hasVideoMedia: Boolean(mergedPayload.hasVideoMedia),
+            ocrTextRaw: String(mergedPayload.ocrTextRaw || ""),
+            ocrTextClean: String(mergedPayload.ocrTextClean || ""),
+            transcriptText: String(mergedPayload.transcriptText || ""),
+            transcriptSegments: Array.isArray(mergedPayload.transcriptSegments)
+              ? mergedPayload.transcriptSegments.map((item) => String(item))
+              : [],
+            frameOcrTexts: Array.isArray(mergedPayload.frameOcrTexts)
+              ? mergedPayload.frameOcrTexts.map((item) => String(item))
+              : [],
+            resolvedContentText: String(mergedPayload.resolvedContentText || sample.contentText || ""),
+            resolvedContentSource: ((mergedPayload.resolvedContentSource as string) || "note-body") as ViralLabSample["resolvedContentSource"],
+            status: "active",
+            createdAt: sample.createdAt.toISOString(),
+            updatedAt: sample.updatedAt.toISOString(),
+          };
+        }),
+      ),
+      analyses: normalizeAnalyses(
+        analyses.map((analysis) => ({
+          id: analysis.id,
+          sampleId: analysis.sampleId,
+          userId: analysis.userId,
+          analysisVersion: analysis.analysisVersion,
+          hookType: analysis.hookType || "",
+          structureType: analysis.structureType || "",
+          emotionTags: parseJsonArray(analysis.emotionTagsJson),
+          rhythmType: analysis.rhythmType || "",
+          trendTags: parseJsonArray(analysis.trendTagsJson),
+          targetAudience: parseJsonArray(analysis.targetAudienceJson),
+          viralReasons: parseJsonArray(analysis.viralReasonsJson),
+          keyPoints: parseJsonArray(analysis.keyPointsJson),
+          riskNotes: parseJsonArray(analysis.riskNotesJson),
+          summary: analysis.summary || "",
+          modelName: analysis.modelName || "mvp-local-analyzer",
+          promptVersion: analysis.promptVersion || "analyze.v1",
+          fallbackStatus: (analysis.fallbackStatus as ViralLabAnalysis["fallbackStatus"]) || "local-only",
+          fallbackReason: analysis.fallbackReason || null,
+          createdAt: analysis.createdAt.toISOString(),
+          updatedAt: analysis.updatedAt.toISOString(),
+        })),
+      ),
+      patterns: normalizePatterns(
+        patterns.map((pattern) => {
+          const sources = patternSourceMap.get(pattern.id) || { analysisIds: [], sampleIds: [] };
+          return {
+            id: pattern.id,
+            userId: pattern.userId,
+            name: pattern.name,
+            topic: pattern.topic || "",
+            description: pattern.description || "",
+            hookTemplate: pattern.hookTemplate || "",
+            bodyTemplate: pattern.bodyTemplate || "",
+            endingTemplate: pattern.endingTemplate || "",
+            emotionalCore: pattern.emotionalCore || "",
+            trendSummary: pattern.trendSummary || "",
+            applicableScenarios: parseJsonArray(pattern.applicableScenariosJson),
+            confidenceScore: pattern.confidenceScore,
+            sourceAnalysisIds: sources.analysisIds,
+            sourceSampleIds: sources.sampleIds,
+            modelName: pattern.modelName || "mvp-local-pattern-engine",
+            promptVersion: pattern.promptVersion || "patterns.v1",
+            fallbackStatus: (pattern.fallbackStatus as ViralLabPattern["fallbackStatus"]) || "local-only",
+            fallbackReason: pattern.fallbackReason || null,
+            status: "active",
+            createdAt: pattern.createdAt.toISOString(),
+            updatedAt: pattern.updatedAt.toISOString(),
+          };
+        }),
+      ),
+      generationJobs: generationJobs.map((job) => ({
+        id: job.id,
+        userId: job.userId,
+        patternId: job.patternId || null,
+        topic: job.topic,
+        goal: job.goal || "",
+        tone: job.tone || "",
+        targetAudience: job.targetAudience || "",
+        status: job.status as ViralLabGenerationJob["status"],
+        errorMessage: job.errorMessage || null,
+        createdAt: job.createdAt.toISOString(),
+        updatedAt: job.updatedAt.toISOString(),
+      })),
+      generatedContents: normalizeGeneratedContents(
+        generatedContents.map((content) => ({
+          id: content.id,
+          jobId: content.jobId,
+          userId: content.userId,
+          patternId: content.patternId || null,
+          platform: "xiaohongshu",
+          titleCandidates: parseJsonArray(content.titleCandidatesJson),
+          bodyText: content.bodyText || "",
+          coverCopy: content.coverCopy || "",
+          tags: parseJsonArray(content.tagsJson),
+          generationNotes: content.generationNotes || "",
+          modelName: content.modelName || "mvp-local-generator",
+          promptVersion: content.promptVersion || "generate.v1",
+          fallbackStatus: (content.fallbackStatus as ViralLabGeneratedContent["fallbackStatus"]) || "local-only",
+          fallbackReason: content.fallbackReason || null,
+          status: "draft",
+          createdAt: content.createdAt.toISOString(),
+          updatedAt: content.updatedAt.toISOString(),
+        })),
+      ),
+      workflowJobs: [],
+      auditLogs: auditLogs.map((log) => ({
+        id: log.id,
+        userId: log.userId || null,
+        action: log.action,
+        targetType: log.targetType || "",
+        targetId: log.targetId || null,
+        payloadJson: log.payloadJson || null,
+        createdAt: log.createdAt.toISOString(),
+      })),
+    };
   }
 }

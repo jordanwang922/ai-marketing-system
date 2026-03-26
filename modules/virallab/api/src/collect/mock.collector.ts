@@ -35,30 +35,64 @@ export class MockCollector implements ViralLabCollectorProvider {
   readonly platform = "xiaohongshu" as const;
 
   async collect(request: CollectRequest, _context?: CollectorContext): Promise<CollectorRunResult> {
-    const samples: CollectedSampleInput[] = Array.from({ length: request.targetCount }).map((_, index) => ({
-      platformContentId: `mock_${encodeURIComponent(request.keyword)}_${index + 1}`,
-      title: buildTitle(request.keyword, index),
-      contentText: buildBody(request.keyword, index),
-      contentSummary: `${request.keyword}主题的热门图文样本，强调钩子、结构和结尾转化。`,
-      authorName: AUTHOR_POOL[index % AUTHOR_POOL.length],
-      authorId: `mock_author_${index % AUTHOR_POOL.length}`,
-      publishTime: new Date(Date.now() - index * 3600 * 1000).toISOString(),
-      likeCount: 1200 + index * 137,
-      commentCount: 90 + index * 11,
-      collectCount: 230 + index * 18,
-      shareCount: 40 + index * 5,
-      tags: [TAG_POOL[index % TAG_POOL.length], TAG_POOL[(index + 2) % TAG_POOL.length], request.keyword],
-      sourceUrl: `https://www.xiaohongshu.com/explore/mock_${encodeURIComponent(request.keyword)}_${index + 1}`,
-      coverImageUrl: "https://placehold.co/600x800?text=ViralLab",
-      mediaImageUrls: ["https://placehold.co/1200x1600?text=ViralLab+Media"],
-      mediaVideoUrls: [],
-    }));
+    const samples: CollectedSampleInput[] = Array.from({ length: request.targetCount }).map((_, index) => {
+      const isVideo = request.noteType === "video" || (request.noteType === "all" && index % 3 === 0);
+      const imageUrls = isVideo
+        ? ["https://placehold.co/1200x1600?text=ViralLab+Video+Poster"]
+        : index % 2 === 0
+          ? [
+              "https://placehold.co/1200x3200?text=ViralLab+Long+Image+1",
+              "https://placehold.co/1200x3200?text=ViralLab+Long+Image+2",
+            ]
+          : ["https://placehold.co/1200x1600?text=ViralLab+Media"];
+      const isLongImage = !isVideo && imageUrls.length > 1;
+      const contentText = isLongImage ? "正文较短，主要信息在长图里。" : buildBody(request.keyword, index);
+      return {
+        platformContentId: `mock_${encodeURIComponent(request.keyword)}_${index + 1}`,
+        title: buildTitle(request.keyword, index),
+        contentText,
+        contentSummary: `${request.keyword}主题的热门${isVideo ? "视频" : "图文"}样本，强调钩子、结构和结尾转化。`,
+        contentType: isVideo ? "video" : "image",
+        contentFormat: isVideo ? "video-note" : isLongImage ? "long-image-note" : "single-image-note",
+        longImageCandidate: isLongImage,
+        authorName: AUTHOR_POOL[index % AUTHOR_POOL.length],
+        authorId: `mock_author_${index % AUTHOR_POOL.length}`,
+        publishTime: new Date(Date.now() - index * 3600 * 1000).toISOString(),
+        likeCount: 1200 + index * 137,
+        commentCount: 90 + index * 11,
+        collectCount: 230 + index * 18,
+        shareCount: 40 + index * 5,
+        tags: [TAG_POOL[index % TAG_POOL.length], TAG_POOL[(index + 2) % TAG_POOL.length], request.keyword],
+        sourceUrl: `https://www.xiaohongshu.com/explore/mock_${encodeURIComponent(request.keyword)}_${index + 1}`,
+        coverImageUrl: imageUrls[0],
+        mediaImageUrls: imageUrls,
+        mediaVideoUrls: isVideo ? ["https://example.com/mock-video.mp4"] : [],
+        hasVideoMedia: isVideo,
+        ocrTextRaw: isLongImage ? `${request.keyword} 长图第一页\n${request.keyword} 长图第二页` : "",
+        ocrTextClean: isLongImage ? `${request.keyword} 长图第一页 ${request.keyword} 长图第二页` : "",
+        transcriptText: isVideo ? `${request.keyword} 视频口播示例，讲解选题、结构和转化动作。` : "",
+        transcriptSegments: isVideo ? [`${request.keyword} 视频口播示例`, "讲解选题、结构和转化动作。"] : [],
+        frameOcrTexts: isVideo ? [`${request.keyword} 视频封面`, "3个爆款切入角度"] : [],
+        resolvedContentText: isVideo
+          ? `${request.keyword} 视频口播示例，讲解选题、结构和转化动作。`
+          : isLongImage
+            ? `${request.keyword} 长图第一页 ${request.keyword} 长图第二页`
+            : contentText,
+        resolvedContentSource: isVideo ? "video-frame-ocr" : isLongImage ? "image-ocr" : "note-body",
+      };
+    });
 
     return {
       mode: "mock",
       status: "completed",
       progress: 100,
-      metadata: { provider: this.id, reason: "local-mvp" },
+      metadata: {
+        provider: this.id,
+        reason: "local-mvp",
+        sortBy: request.sortBy,
+        noteType: request.noteType,
+        publishWindow: request.publishWindow,
+      },
       samples,
     };
   }

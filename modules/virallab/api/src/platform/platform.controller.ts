@@ -25,4 +25,27 @@ export class PlatformController {
     const token = authorization?.replace(/^Bearer\s+/i, "").trim();
     return this.platformService.verifyXiaohongshuCookie({ token });
   }
+
+  @Post("xiaohongshu/scan-login/start")
+  startXiaohongshuScanLogin(
+    @Body() body: { accountName?: string },
+    @Headers("authorization") authorization?: string,
+  ) {
+    const token = authorization?.replace(/^Bearer\s+/i, "").trim();
+    return this.platformService.startXiaohongshuScanLogin({ ...body, token });
+  }
+
+  @Post("xiaohongshu/scan-login/complete")
+  completeXiaohongshuScanLogin(
+    @Body() body: { sessionId?: string; accountName?: string },
+    @Headers("authorization") authorization?: string,
+  ) {
+    const token = authorization?.replace(/^Bearer\s+/i, "").trim();
+    return this.platformService.completeXiaohongshuScanLogin({ ...body, token });
+  }
+
+  @Post("xiaohongshu/scan-login/cancel")
+  cancelXiaohongshuScanLogin(@Body() body: { sessionId?: string }) {
+    return this.platformService.cancelXiaohongshuScanLogin(body);
+  }
 }

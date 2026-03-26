@@ -671,3 +671,135 @@ V1 implements the small red book workflow only:
     - collected Xiaohongshu titles/body text
     - LLM-generated draft body text
     - pattern descriptions
+- Multimodal collector note:
+  - current Xiaohongshu collector is now split conceptually into:
+    - image-note path
+    - video-note path
+  - request-level controls now include:
+    - `sortBy`
+    - `noteType`
+    - `publishWindow`
+  - worker currently applies:
+    - local sample sorting for:
+      - `hot`
+      - `latest`
+      - `most-liked`
+      - `most-commented`
+      - `most-collected`
+    - local filtering for:
+      - note type
+      - publish time window
+- Long-image OCR note:
+  - OCR helper:
+    - `worker/src/vision-ocr.swift`
+  - runtime strategy:
+    - identify likely long-image notes
+    - download up to 3 images
+    - run macOS Vision OCR
+    - deduplicate/clean text
+    - write back:
+      - `ocrTextRaw`
+      - `ocrTextClean`
+      - `resolvedContentText`
+      - `resolvedContentSource=image-ocr`
+- Video V1 note:
+  - true ASR is not wired yet because the current environment does not provide:
+    - `ffmpeg`
+    - `whisper` / `faster-whisper`
+  - video V1 uses:
+    - modal/page playback context
+    - screenshot capture of media region
+    - Vision OCR on those frames
+  - write-back fields:
+    - `frameOcrTexts`
+    - `transcriptText`
+    - `transcriptSegments`
+    - `resolvedContentSource=video-frame-ocr`
+- Persistence note:
+  - new multimodal sample fields are currently persisted through `parsedPayloadJson`
+    - not as first-class Prisma columns
+  - reason:
+    - keep the current SQLite mirror path lightweight
+    - avoid requiring a schema migration in this round
+  - downstream services that now consume `parsedPayloadJson`:
+    - `SamplesService`
+    - `AnalyzeService`
+- Xiaohongshu real-filter note:
+  - form fields:
+    - `sortBy`
+    - `noteType`
+    - `publishWindow`
+  - are no longer treated as local-only preferences inside the worker
+  - current runtime strategy:
+    - observe real filter metadata from:
+      - `/api/sns/web/v1/search/filter`
+    - intercept browser-originated:
+      - `/api/sns/web/v1/search/notes`
+    - rewrite request body before send:
+      - `sort`
+      - `note_type`
+      - `filters`
+  - this was introduced because live testing confirmed:
+    - local sort/filter after extraction did not match Xiaohongshu’s own filtered result set
+  - currently confirmed live mappings:
+    - `hot -> general`
+    - `latest -> time_descending`
+    - `most-liked -> popularity_descending`
+    - `most-commented -> comment_descending`
+    - `most-collected -> collect_descending`
+    - `image -> note_type=2 / 普通笔记`
+    - `video -> note_type=1 / 视频笔记`
+    - `day -> 一天内`
+    - `week -> 一周内`
+    - `half-year -> 半年内`
+- Scan-login implementation note:
+  - real cookie setup now supports an in-app scan flow
+  - `PlatformService` holds an in-memory map of active scan sessions
+  - each session owns:
+    - browser
+    - browser context
+    - page
+    - user id
+    - account name
+  - runtime strategy:
+    - `scan-login/start` opens a visible Xiaohongshu window via Playwright
+    - `scan-login/complete` reads cookies from the active browser context
+    - cookies are serialized into a standard `Cookie` header string
+    - the result is passed through the existing:
+      - `saveXiaohongshuCookie`
+      - `verifyXiaohongshuCookie`
+  - Playwright dependency source:
+    - dynamically loaded from:
+      - `modules/virallab/worker/node_modules/playwright`
+    - reason:
+      - keep the API package lightweight
+      - avoid duplicating browser runtime dependencies
+  - product behavior:
+    - the frontend treats scan-login as the primary path for:
+      - `collectorMode=real`
+      - `providerId=xiaohongshu-playwright`
+    - manual cookie paste remains as a fallback only
+- Runtime progress note:
+  - the Xiaohongshu Playwright worker now writes temporary progress snapshots during a run
+  - current progress stages include:
+    - `opening-search-page`
+    - `applying-filters`
+    - `extracting-search-results`
+    - `opening-note-details`
+    - `note-detail-enrichment`
+    - `running-image-ocr`
+    - `finalizing-samples`
+  - the collector bridge polls this progress file and forwards:
+    - `progress`
+    - `stage`
+    - `message`
+    - `extractedCount`
+    - `totalCount`
+    into the collection job metadata
+- OCR note:
+  - weak-body图文 no longer require 2+ images to trigger OCR
+  - the current rule is:
+    - image note
+    - at least 1 image
+    - `contentText.length < 220`
+  - this is intentionally broader because many Xiaohongshu “single-image” posts still place most正文 in the image itself

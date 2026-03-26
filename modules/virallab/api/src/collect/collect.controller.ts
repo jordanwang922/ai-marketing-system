@@ -1,14 +1,24 @@
 import { Body, Controller, Get, Headers, Param, Post } from "@nestjs/common";
 import { CollectService } from "./collect.service";
-import { CollectorMode, CollectorProviderId } from "./collector.types";
+import {
+  CollectNoteType,
+  CollectPublishWindow,
+  CollectSortBy,
+  CollectorMode,
+  CollectorProviderId,
+} from "./collector.types";
 
 type CreateCollectJobDto = {
   platform?: "xiaohongshu";
   keyword?: string;
-  sortBy?: "hot" | "latest";
+  sortBy?: CollectSortBy;
+  noteType?: CollectNoteType;
+  publishWindow?: CollectPublishWindow;
   targetCount?: number;
   collectorMode?: CollectorMode;
   providerId?: CollectorProviderId;
+  manualSearchPageUrl?: string;
+  manualSearchRequestData?: Record<string, unknown> | null;
 };
 
 @Controller("collect")

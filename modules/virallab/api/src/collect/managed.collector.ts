@@ -167,9 +167,27 @@ const buildSearchUrl = (request: CollectRequest) => {
     keyword: request.keyword,
     source: "web_search_result_notes",
   });
-  if (request.sortBy === "latest") {
-    params.set("sort_by", "time_descending");
-  }
+  const sortMap: Record<CollectRequest["sortBy"], string | null> = {
+    hot: null,
+    latest: "time_descending",
+    "most-liked": "likes_descending",
+    "most-commented": "comments_descending",
+    "most-collected": "collects_descending",
+  };
+  const noteTypeMap: Record<CollectRequest["noteType"], string | null> = {
+    all: null,
+    image: "normal",
+    video: "video",
+  };
+  const timeMap: Record<CollectRequest["publishWindow"], string | null> = {
+    all: null,
+    day: "day",
+    week: "week",
+    "half-year": "half_year",
+  };
+  if (sortMap[request.sortBy]) params.set("sort_by", sortMap[request.sortBy]);
+  if (noteTypeMap[request.noteType]) params.set("note_type", noteTypeMap[request.noteType]);
+  if (timeMap[request.publishWindow]) params.set("publish_time", timeMap[request.publishWindow]);
   return `https://www.xiaohongshu.com/search_result?${params.toString()}`;
 };
 
@@ -323,6 +341,9 @@ export class XiaohongshuManagedCollector implements ViralLabCollectorProvider {
       title,
       contentText,
       contentSummary,
+      contentType: mediaVideoUrls.length ? "video" : "image",
+      contentFormat: mediaVideoUrls.length ? "video-note" : mediaImageUrls.length > 1 ? "multi-image-note" : "single-image-note",
+      longImageCandidate: !mediaVideoUrls.length && mediaImageUrls.length > 1 && contentText.length < 120,
       authorName,
       authorId,
       publishTime: normalizeTimestamp(record.publishTime || record.time || record.createdAt || record.publish_at),
@@ -335,6 +356,14 @@ export class XiaohongshuManagedCollector implements ViralLabCollectorProvider {
       coverImageUrl,
       mediaImageUrls,
       mediaVideoUrls,
+      hasVideoMedia: mediaVideoUrls.length > 0,
+      ocrTextRaw: "",
+      ocrTextClean: "",
+      transcriptText: "",
+      transcriptSegments: [],
+      frameOcrTexts: [],
+      resolvedContentText: contentText || contentSummary,
+      resolvedContentSource: "note-body",
     };
   }
 
@@ -375,6 +404,9 @@ export class XiaohongshuManagedCollector implements ViralLabCollectorProvider {
         title,
         contentText: "",
         contentSummary: sharedSummary || `${request.keyword} related Xiaohongshu result extracted from managed links.`,
+        contentType: request.noteType === "video" ? "video" : "image",
+        contentFormat: request.noteType === "video" ? "video-note" : "single-image-note",
+        longImageCandidate: false,
         authorName: "",
         authorId: "",
         publishTime: "",
@@ -387,6 +419,14 @@ export class XiaohongshuManagedCollector implements ViralLabCollectorProvider {
         coverImageUrl: "",
         mediaImageUrls: [],
         mediaVideoUrls: [],
+        hasVideoMedia: request.noteType === "video",
+        ocrTextRaw: "",
+        ocrTextClean: "",
+        transcriptText: "",
+        transcriptSegments: [],
+        frameOcrTexts: [],
+        resolvedContentText: sharedSummary || "",
+        resolvedContentSource: "merged",
       };
     });
   }

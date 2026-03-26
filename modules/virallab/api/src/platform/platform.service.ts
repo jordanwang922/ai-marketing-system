@@ -1,18 +1,134 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, OnModuleDestroy } from "@nestjs/common";
+import * as path from "node:path";
+import { createRequire } from "node:module";
+import { execFile } from "node:child_process";
+import { rm } from "node:fs/promises";
 import { AuthService } from "../auth/auth.service";
 import { ViralLabStoreService } from "../store/store.service";
 import { XiaohongshuCollector } from "../collect/xiaohongshu.collector";
 import { PrismaService } from "../prisma.service";
 
+type ScanSessionHandle = {
+  id: string;
+  userId: string;
+  accountName: string;
+  userDataDir: string;
+  browser: {
+    close: () => Promise<void>;
+  };
+  context: {
+    cookies: (urls?: string[] | string) => Promise<Array<{ name: string; value: string }>>;
+    close: () => Promise<void>;
+  };
+  page: {
+    url: () => string;
+  };
+  latestSearchNotesRequestJson: string | null;
+  startedAt: string;
+};
+
 @Injectable()
-export class PlatformService {
+export class PlatformService implements OnModuleDestroy {
   private readonly xiaohongshuCollector = new XiaohongshuCollector();
+  private readonly scanSessions = new Map<string, ScanSessionHandle>();
 
   constructor(
     private readonly store: ViralLabStoreService,
     private readonly authService: AuthService,
     private readonly prisma: PrismaService,
   ) {}
+
+  async onModuleDestroy() {
+    await Promise.all([...this.scanSessions.values()].map((session) => this.closeScanSession(session.id)));
+  }
+
+  private loadPlaywright() {
+    const workerPlaywrightPath = path.resolve(__dirname, "../../../worker/node_modules/playwright");
+    const require = createRequire(__filename);
+    return require(workerPlaywrightPath) as {
+      chromium: {
+        launchPersistentContext: (
+          userDataDir: string,
+          options: Record<string, unknown>,
+        ) => Promise<{
+          pages: () => Array<{
+            goto: (url: string, options?: Record<string, unknown>) => Promise<void>;
+            waitForLoadState: (state?: string, options?: Record<string, unknown>) => Promise<void>;
+            bringToFront?: () => Promise<void>;
+            url: () => string;
+            on: (
+              event: "request",
+              listener: (request: { url: () => string; postData: () => string | null }) => void,
+            ) => void;
+          }>;
+          newPage: () => Promise<{
+            goto: (url: string, options?: Record<string, unknown>) => Promise<void>;
+            waitForLoadState: (state?: string, options?: Record<string, unknown>) => Promise<void>;
+            bringToFront?: () => Promise<void>;
+            url: () => string;
+            on: (
+              event: "request",
+              listener: (request: { url: () => string; postData: () => string | null }) => void,
+            ) => void;
+          }>;
+          cookies: (urls?: string[] | string) => Promise<Array<{ name: string; value: string }>>;
+          close: () => Promise<void>;
+        }>;
+        launch: (options: Record<string, unknown>) => Promise<{
+          newContext: (options?: Record<string, unknown>) => Promise<{
+          newPage: () => Promise<{
+            goto: (url: string, options?: Record<string, unknown>) => Promise<void>;
+            waitForLoadState: (state?: string, options?: Record<string, unknown>) => Promise<void>;
+            bringToFront?: () => Promise<void>;
+            url: () => string;
+            on: (
+              event: "request",
+              listener: (request: { url: () => string; postData: () => string | null }) => void,
+            ) => void;
+          }>;
+            cookies: (urls?: string[] | string) => Promise<Array<{ name: string; value: string }>>;
+            close: () => Promise<void>;
+          }>;
+          close: () => Promise<void>;
+        }>;
+      };
+    };
+  }
+
+  private async closeScanSession(sessionId: string) {
+    const session = this.scanSessions.get(sessionId);
+    if (!session) return;
+    this.scanSessions.delete(sessionId);
+    try {
+      await session.context.close();
+    } catch {
+      // ignore close errors during teardown
+    }
+    try {
+      await session.browser.close();
+    } catch {
+      // ignore close errors during teardown
+    }
+    await rm(session.userDataDir, { recursive: true, force: true }).catch(() => {
+      // ignore cleanup failures for scan browser profiles
+    });
+  }
+
+  private async activateBrowserWindow() {
+    const browserNames = ["Google Chrome for Testing", "Chromium", "Google Chrome"];
+    for (const name of browserNames) {
+      await new Promise<void>((resolve) => {
+        execFile("osascript", ["-e", `tell application "${name}" to activate`], () => resolve());
+      });
+    }
+  }
+
+  private serializeCookies(cookies: Array<{ name: string; value: string }>) {
+    return cookies
+      .filter((cookie) => cookie.name && cookie.value)
+      .map((cookie) => `${cookie.name}=${cookie.value}`)
+      .join("; ");
+  }
 
   private parseVerificationMetadata(value: string | null) {
     if (!value) return null;
@@ -127,6 +243,136 @@ export class PlatformService {
       success: true,
       items: db.platformAccounts.filter((item) => item.userId === userId).map((item) => this.normalizeAccount(item)),
     };
+  }
+
+  async startXiaohongshuScanLogin(payload: { token?: string; accountName?: string; keyword?: string }) {
+    const userId = await this.resolveUserId(payload.token);
+    const existing = [...this.scanSessions.values()].find((session) => session.userId === userId);
+    if (existing) {
+      await this.closeScanSession(existing.id);
+    }
+
+    const playwright = this.loadPlaywright();
+    const sessionId = this.store.createId("scan");
+    const userDataDir = path.resolve(process.cwd(), `.scan-session/chrome-${sessionId}`);
+    const context = await playwright.chromium.launchPersistentContext(userDataDir, {
+      headless: false,
+      args: ["--new-window"],
+    });
+    const page = context.pages()[0] || (await context.newPage());
+    const keyword = String(payload.keyword || "AI教育").trim() || "AI教育";
+    const entryUrl = `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}&source=web_explore_feed`;
+    page.on("request", (request) => {
+      if (!request.url().includes("/api/sns/web/v1/search/notes")) return;
+      const raw = request.postData();
+      const session = this.scanSessions.get(sessionId);
+      if (!session || !raw) return;
+      session.latestSearchNotesRequestJson = raw;
+    });
+    await page.goto(entryUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
+    });
+    await page.bringToFront?.().catch(() => {
+      // Ignore if the browser backend does not support explicit focus.
+    });
+    await this.activateBrowserWindow().catch(() => {
+      // Ignore macOS activation failures and continue with the scan session.
+    });
+    await page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {
+      // Xiaohongshu may keep polling; domcontentloaded is enough for QR flow.
+    });
+
+    this.scanSessions.set(sessionId, {
+      id: sessionId,
+      userId,
+      accountName: String(payload.accountName || "Xiaohongshu Account"),
+      userDataDir,
+      browser: {
+        close: async () => {},
+      },
+      context,
+      page,
+      latestSearchNotesRequestJson: null,
+      startedAt: new Date().toISOString(),
+    });
+
+    return {
+      success: true,
+      sessionId,
+      status: "waiting_for_scan",
+      entryUrl,
+      message: "Xiaohongshu login window opened. Scan the QR code, then return and click complete.",
+    };
+  }
+
+  async completeXiaohongshuScanLogin(payload: { token?: string; sessionId?: string; accountName?: string }) {
+    const sessionId = String(payload.sessionId || "");
+    const session = this.scanSessions.get(sessionId);
+    if (!session) {
+      return {
+        success: false,
+        verified: false,
+        errorMessage: "Scan session not found or already closed.",
+        item: null,
+      };
+    }
+
+    const cookies = await session.context.cookies([
+      "https://www.xiaohongshu.com",
+      "https://edith.xiaohongshu.com",
+    ]);
+    const cookieBlob = this.serializeCookies(cookies);
+    const visibleUrl = session.page.url();
+    const manualSearchRequestData = session.latestSearchNotesRequestJson
+      ? (() => {
+          try {
+            return JSON.parse(session.latestSearchNotesRequestJson) as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        })()
+      : null;
+    if (!cookieBlob || !cookieBlob.includes("web_session")) {
+      return {
+        success: false,
+        verified: false,
+        errorMessage: "Login appears incomplete. Please finish scanning and make sure Xiaohongshu is fully logged in before clicking complete.",
+        item: null,
+        metadata: {
+          visibleUrl,
+        },
+      };
+    }
+
+    const saved = await this.saveXiaohongshuCookie({
+      token: payload.token,
+      accountName: payload.accountName || session.accountName,
+      cookieBlob,
+    });
+    return {
+      success: true,
+      verified: true,
+      errorMessage: null,
+      metadata: {
+        visibleUrl,
+        cookieCaptured: true,
+        manualCapture: {
+          manualSearchPageUrl: visibleUrl,
+          manualSearchRequestData,
+        },
+      },
+      item: saved.item,
+    };
+  }
+
+  async cancelXiaohongshuScanLogin(payload: { sessionId?: string }) {
+    const sessionId = String(payload.sessionId || "");
+    if (!sessionId || !this.scanSessions.has(sessionId)) {
+      return { success: true };
+    }
+    await this.closeScanSession(sessionId);
+    return { success: true };
   }
 
   async saveXiaohongshuCookie(payload: { accountName?: string; cookieBlob?: string; token?: string }) {

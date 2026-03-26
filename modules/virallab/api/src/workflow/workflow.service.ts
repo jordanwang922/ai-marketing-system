@@ -5,8 +5,19 @@ import { PatternsService } from "../patterns/patterns.service";
 import { PrismaService } from "../prisma.service";
 import { ViralLabStoreService } from "../store/store.service";
 import { ViralLabCollectionJob, ViralLabWorkflowJob } from "../store/types";
-import { CollectorProviderId } from "../collect/collector.types";
+import { CollectSortBy, CollectorProviderId } from "../collect/collector.types";
 import { computeSampleQuality, parseJsonArray } from "../samples/sample-quality";
+
+const toSortableTime = (value: unknown) => {
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  return 0;
+};
 
 type WorkflowRequest = {
   jobId?: string;
@@ -45,7 +56,7 @@ type WorkflowSourceJob = {
   userId: string;
   platform: "xiaohongshu";
   keyword: string;
-  sortBy: "hot" | "latest";
+  sortBy: CollectSortBy;
   collectorMode: "mock" | "real";
   targetCount: number;
   status: "pending" | "running" | "completed" | "failed";
@@ -200,7 +211,7 @@ export class WorkflowService implements OnModuleInit {
     const db = await this.store.read();
     const latestJob = db.workflowJobs
       .slice()
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      .sort((a, b) => toSortableTime(b.createdAt) - toSortableTime(a.createdAt))[0];
 
     if (!latestJob) {
       return {
@@ -229,7 +240,7 @@ export class WorkflowService implements OnModuleInit {
       success: true,
       items: db.workflowJobs
         .slice()
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .sort((a, b) => toSortableTime(b.createdAt) - toSortableTime(a.createdAt))
         .map((item) => this.normalizeWorkflowJob(item)),
     };
   }
@@ -611,7 +622,7 @@ export class WorkflowService implements OnModuleInit {
         .sort((a, b) => {
           if (b.qualityScore !== a.qualityScore) return b.qualityScore - a.qualityScore;
           if (b.likeCount !== a.likeCount) return b.likeCount - a.likeCount;
-          return b.createdAt.localeCompare(a.createdAt);
+          return toSortableTime(b.createdAt) - toSortableTime(a.createdAt);
         })
         .slice(0, limit)
         .map((item) => ({
@@ -645,7 +656,7 @@ export class WorkflowService implements OnModuleInit {
       .sort((a, b) => {
         if (b.qualityScore !== a.qualityScore) return b.qualityScore - a.qualityScore;
         if (b.likeCount !== a.likeCount) return b.likeCount - a.likeCount;
-        return b.createdAt.localeCompare(a.createdAt);
+        return toSortableTime(b.createdAt) - toSortableTime(a.createdAt);
       })
       .slice(0, limit)
       .map((item) => ({

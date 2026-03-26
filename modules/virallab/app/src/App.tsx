@@ -2,6 +2,16 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 type Locale = "zh" | "en";
 type HelpTab = "manual" | "cookie";
+type ScanLoginStatus = "idle" | "waiting" | "capturing";
+type ScanWorkflowStage =
+  | "idle"
+  | "scan-window-open"
+  | "capturing-session"
+  | "creating-job"
+  | "job-pending"
+  | "job-running"
+  | "job-completed"
+  | "job-failed";
 
 type OverviewStat = {
   label: string;
@@ -16,12 +26,17 @@ type Job = {
   progress: number;
   targetCount: number;
   sortBy: string;
+  noteType?: string;
+  publishWindow?: string;
   collectorMode: "mock" | "real";
   errorMessage?: string | null;
   metadata?: {
     provider?: string;
     providerMode?: string;
     reason?: string;
+    progressStage?: string;
+    progressMessage?: string;
+    targetCount?: number;
     rawItemCount?: number;
     normalizedItemCount?: number;
     fallbackItemCount?: number;
@@ -31,6 +46,11 @@ type Job = {
     htmlCaptured?: boolean;
     extractedCount?: number;
     extractedFrom?: string;
+    appliedSearchFilters?: {
+      sort?: { name?: string; id?: string };
+      noteType?: { name?: string; id?: string };
+      publishWindow?: { name?: string; id?: string };
+    };
     diagnostics?: {
       title?: string;
       href?: string;
@@ -51,11 +71,15 @@ type Job = {
 
 type Sample = {
   id: string;
+  jobId: string;
   keyword: string;
   title: string;
   provider: string;
   contentText: string;
   contentSummary: string;
+  contentType: "image" | "video";
+  contentFormat: string;
+  longImageCandidate: boolean;
   authorName: string;
   publishTime: string;
   likeCount: number;
@@ -67,6 +91,14 @@ type Sample = {
   coverImageUrl: string;
   mediaImageUrls: string[];
   mediaVideoUrls: string[];
+  hasVideoMedia: boolean;
+  ocrTextRaw: string;
+  ocrTextClean: string;
+  transcriptText: string;
+  transcriptSegments: string[];
+  frameOcrTexts: string[];
+  resolvedContentText: string;
+  resolvedContentSource: string;
   qualityScore: number;
   qualityFlags: string[];
   collectorMode: "mock" | "real";
@@ -273,6 +305,15 @@ const formatStatus = (status: string | undefined, locale: Locale) => {
     blocked: { zh: "已阻断", en: "Blocked" },
     hot: { zh: "热门", en: "hot" },
     latest: { zh: "最新", en: "latest" },
+    "most-liked": { zh: "最多点赞", en: "most liked" },
+    "most-commented": { zh: "最多评论", en: "most commented" },
+    "most-collected": { zh: "最多收藏", en: "most collected" },
+    all: { zh: "不限", en: "all" },
+    image: { zh: "图文", en: "image" },
+    video: { zh: "视频", en: "video" },
+    day: { zh: "一天内", en: "within 1 day" },
+    week: { zh: "一周内", en: "within 1 week" },
+    "half-year": { zh: "半年内", en: "within 6 months" },
     mock: { zh: "模拟", en: "mock" },
     real: { zh: "真实", en: "real" },
     verified: { zh: "已验证", en: "Verified" },
@@ -298,6 +339,54 @@ const formatQualityFlag = (flag: string, locale: Locale) => {
   };
 
   return map[flag]?.[locale] || flag;
+};
+
+const formatPublishDate = (value: string | undefined) => {
+  if (!value) return "--";
+  const raw = String(value);
+  const isoMatch = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoMatch) return isoMatch[1];
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+  return date.toISOString().slice(0, 10);
+};
+
+const inferSampleType = (sample: Sample): "image" | "video" => {
+  if (sample.contentType === "image" || sample.contentType === "video") return sample.contentType;
+  if (sample.hasVideoMedia || (sample.mediaVideoUrls?.length || 0) > 0) return "video";
+  if (/video-note/i.test(sample.contentFormat || "")) return "video";
+  if (/视频|video/i.test(sample.title || "")) return "video";
+  return "image";
+};
+
+const formatSampleType = (sample: Sample, locale: Locale) => {
+  const type = inferSampleType(sample);
+  const format = String(sample.contentFormat || "").trim();
+  const formatMap: Record<string, { zh: string; en: string }> = {
+    "video-note": { zh: "视频笔记", en: "video note" },
+    "multi-image-note": { zh: "多图图文", en: "multi-image note" },
+    "single-image-note": { zh: "单图图文", en: "single-image note" },
+    "long-image-note": { zh: "长图图文", en: "long-image note" },
+    "text-first-note": { zh: "正文优先图文", en: "text-first note" },
+  };
+
+  const base = formatStatus(type, locale);
+  const detail = formatMap[format]?.[locale];
+  return detail ? `${base} · ${detail}` : base;
+};
+
+const formatCount = (value: number | undefined, locale: Locale) => {
+  const numeric = Number(value || 0);
+  return new Intl.NumberFormat(locale === "zh" ? "zh-CN" : "en-US").format(Number.isFinite(numeric) ? numeric : 0);
+};
+
+const buildXiaohongshuSearchHint = (sample: Sample, locale: Locale) => {
+  const title = String(sample.title || "").trim();
+  const author = String(sample.authorName || "").trim();
+  const shortTitle = title.length > 18 ? title.slice(0, 18) : title;
+  const query = [shortTitle, author].filter(Boolean).join(" ");
+  if (!query) return locale === "zh" ? "优先搜标题" : "Search by title first";
+  return locale === "zh" ? `可搜：${query}` : `Search: ${query}`;
 };
 
 const formatWorkflowVerdict = (verdict: "strong" | "usable" | "review" | null | undefined, locale: Locale) => {
@@ -354,6 +443,8 @@ export default function App() {
   const [collectForm, setCollectForm] = useState({
     keyword: "AI教育",
     sortBy: "hot",
+    noteType: "all",
+    publishWindow: "all",
     targetCount: 12,
     collectorMode: "mock" as "mock" | "real",
     providerId: "mock-local",
@@ -374,6 +465,10 @@ export default function App() {
     accountName: "Jordan Xiaohongshu",
     cookieBlob: "",
   });
+  const [scanLoginSessionId, setScanLoginSessionId] = useState("");
+  const [scanLoginStatus, setScanLoginStatus] = useState<ScanLoginStatus>("idle");
+  const [scanWorkflowStage, setScanWorkflowStage] = useState<ScanWorkflowStage>("idle");
+  const [activeCollectionJobId, setActiveCollectionJobId] = useState<string>("");
   const [helpTab, setHelpTab] = useState<HelpTab | null>(null);
   const t = (zh: string, en: string) => (locale === "zh" ? zh : en);
 
@@ -394,17 +489,32 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [helpTab]);
 
-  const selectedSampleIds = useMemo(() => samples.slice(0, 5).map((item) => item.id), [samples]);
-  const visibleSamples = useMemo(() => samples.slice(0, 10), [samples]);
+  const latestCollectionJob = useMemo(() => {
+    if (activeCollectionJobId) {
+      return jobs.find((item) => item.id === activeCollectionJobId) || null;
+    }
+    return jobs[0] || null;
+  }, [activeCollectionJobId, jobs]);
+  const currentJobSamples = useMemo(() => {
+    if (!latestCollectionJob?.id) return [];
+    return samples.filter((item) => item.jobId === latestCollectionJob.id);
+  }, [latestCollectionJob, samples]);
+  const visibleSamples = useMemo(() => {
+    if (latestCollectionJob?.id) {
+      return currentJobSamples.slice(0, 10);
+    }
+    return samples.slice(0, 10);
+  }, [currentJobSamples, latestCollectionJob, samples]);
+  const selectedSampleIds = useMemo(() => visibleSamples.slice(0, 5).map((item) => item.id), [visibleSamples]);
   const selectedAnalysisIds = useMemo(() => analyses.slice(0, 4).map((item) => item.id), [analyses]);
   const sampleQualityStats = useMemo(() => {
-    if (!samples.length) return null;
+    if (!visibleSamples.length) return null;
     const flagCounts = new Map<string, number>();
     let totalScore = 0;
     let strongCount = 0;
     let weakCount = 0;
 
-    for (const sample of samples) {
+    for (const sample of visibleSamples) {
       totalScore += sample.qualityScore || 0;
       if ((sample.qualityScore || 0) >= 80) {
         strongCount += 1;
@@ -417,7 +527,7 @@ export default function App() {
       }
     }
 
-    const averageScore = Math.round(totalScore / samples.length);
+    const averageScore = Math.round(totalScore / visibleSamples.length);
     const topFlags = Array.from(flagCounts.entries())
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5);
@@ -428,15 +538,14 @@ export default function App() {
       weakCount,
       topFlags,
     };
-  }, [samples]);
-  const latestCollectionJob = jobs[0] || null;
+  }, [visibleSamples]);
   const collectionNextStep = useMemo(() => {
     if (!latestCollectionJob) {
       return {
-        title: t("创建任务后下一步怎么做", "What to do after creating a job"),
+        title: t("开始抓取后下一步怎么做", "What to do after starting collection"),
         body: t(
-          "点击“创建任务”后，先看下面第一条任务卡片的状态。状态变成“已完成”后，再去右侧“样本”看具体抓到的内容。",
-          "After creating a job, watch the first task card below. Once the status becomes completed, move to Samples to review the collected content.",
+          "点击“扫码完成并开始抓取”后，先看下面的执行状态。系统成功创建出这一次任务后，再去“样本”看具体抓到的内容。",
+          "After clicking “Scan Complete & Start Collection”, watch the execution state below. Once this run creates a job successfully, move to Samples to review the collected content.",
         ),
         actions: [
           { href: "#samples", label: t("去看样本区", "Go to Samples") },
@@ -483,6 +592,104 @@ export default function App() {
       ],
     };
   }, [latestCollectionJob, locale]);
+  const collectionStageModel = useMemo(() => {
+    const completedCount = latestCollectionJob?.metadata?.extractedCount || 0;
+    const targetCount = latestCollectionJob?.targetCount || collectForm.targetCount || 10;
+    const runningProgress = Math.max(
+      0,
+      Math.min(
+        100,
+        latestCollectionJob?.status === "completed"
+          ? 100
+          : latestCollectionJob?.progress || 0,
+      ),
+    );
+
+    const stage =
+      scanWorkflowStage === "capturing-session" || scanWorkflowStage === "creating-job"
+        ? scanWorkflowStage
+        : latestCollectionJob?.status === "completed"
+          ? "job-completed"
+          : latestCollectionJob?.status === "failed"
+            ? "job-failed"
+            : latestCollectionJob?.status === "running"
+              ? "job-running"
+              : latestCollectionJob?.status === "pending"
+                ? "job-pending"
+                : scanLoginSessionId
+                  ? "scan-window-open"
+                  : "idle";
+
+    const labelMap = {
+      idle: t("等待开始抓取", "Waiting to start collection"),
+      "scan-window-open": t("等待你在小红书里完成扫码和筛选", "Waiting for you to finish scan and filtering in Xiaohongshu"),
+      "capturing-session": t("正在接管登录态和结果页", "Capturing login state and results page"),
+      "creating-job": t("正在创建抓取任务", "Creating collection job"),
+      "job-pending": t("任务已入队，等待执行", "Job queued and waiting to run"),
+      "job-running": t("正在执行抓取任务", "Collection is running"),
+      "job-completed": t("抓取已完成", "Collection completed"),
+      "job-failed": t("抓取失败", "Collection failed"),
+    } satisfies Record<ScanWorkflowStage, string>;
+
+    const descriptionMap = {
+      idle: t("先打开小红书扫码窗口，在小红书里完成扫码、筛选和停留，再回来开始抓取。", "Open the Xiaohongshu scan window first, complete scan and filtering there, then return to start collection."),
+      "scan-window-open": t("请先在小红书窗口里完成扫码，并亲手筛好图文/视频、排序和发布时间。确认页面就是目标结果后，再回来点“扫码完成并开始抓取”。", "Finish scan and filtering inside Xiaohongshu. Once the page matches your target results, return and click “Scan Complete & Start Collection”."),
+      "capturing-session": t("系统正在读取你刚刚停留的小红书结果页和登录态，请不要重复点击。", "ViralLab is reading the Xiaohongshu results page and login state you just prepared. Please do not click repeatedly."),
+      "creating-job": t("系统已经拿到你的筛选状态，正在把这一次抓取任务入队。", "ViralLab captured your filter state and is now creating this collection job."),
+      "job-pending": t("任务已经创建成功，正在等待 worker 开始抓取。", "The job has been created and is waiting for the worker to start."),
+      "job-running":
+        latestCollectionJob?.metadata?.progressMessage ||
+        t(`系统正在抓取第 ${Math.min(completedCount + 1, targetCount)}/${targetCount} 条附近的内容。抓完会自动刷新样本区。`, `The collector is working around item ${Math.min(completedCount + 1, targetCount)}/${targetCount}. Samples will refresh automatically when it finishes.`),
+      "job-completed": t(`这次抓取已经完成，目标 ${targetCount} 条，当前抓到 ${completedCount || targetCount} 条。现在先去“样本”确认内容。`, `This collection is complete. Target: ${targetCount}, collected: ${completedCount || targetCount}. Review Samples next.`),
+      "job-failed": t("这次抓取失败了。先看下面任务卡里的失败原因；如果是扫码或登录态问题，请回到上一步重新打开扫码窗口。", "This collection failed. Review the failure reason in the task card below. If it is a scan or login issue, reopen the scan window and try again."),
+    } satisfies Record<ScanWorkflowStage, string>;
+
+    const steps = [
+      {
+        key: "scan",
+        label: t("扫码完成", "Scan complete"),
+        active: stage === "scan-window-open" || stage === "capturing-session",
+        done: stage !== "idle",
+      },
+      {
+        key: "capture",
+        label: t("接管登录态", "Capture login state"),
+        active: stage === "capturing-session",
+        done: ["creating-job", "job-pending", "job-running", "job-completed", "job-failed"].includes(stage),
+      },
+      {
+        key: "create",
+        label: t("创建任务", "Create job"),
+        active: stage === "creating-job" || stage === "job-pending",
+        done: ["job-running", "job-completed", "job-failed"].includes(stage),
+      },
+      {
+        key: "collect",
+        label: t("执行抓取", "Collect"),
+        active: stage === "job-running",
+        done: stage === "job-completed",
+      },
+      {
+        key: "finish",
+        label: t("完成", "Done"),
+        active: stage === "job-completed" || stage === "job-failed",
+        done: stage === "job-completed",
+        failed: stage === "job-failed",
+      },
+    ];
+
+    return {
+      stage,
+      label: labelMap[stage],
+      description: descriptionMap[stage],
+      progress: runningProgress,
+      countText:
+        latestCollectionJob && (latestCollectionJob.status === "running" || latestCollectionJob.status === "completed")
+          ? t(`已抓取 ${completedCount}/${targetCount} 条`, `Collected ${completedCount}/${targetCount}`)
+          : t(`目标抓取 ${targetCount} 条`, `Target ${targetCount}`),
+      steps,
+    };
+  }, [collectForm.targetCount, latestCollectionJob, locale, scanLoginSessionId, scanWorkflowStage, t]);
   const selectedCollectorCapability = useMemo(() => {
     if (!capabilities) return null;
     if (collectForm.providerId === "xiaohongshu-managed") return capabilities.managed;
@@ -699,6 +906,34 @@ export default function App() {
       });
   }, [token, workflowJobs]);
 
+  useEffect(() => {
+    if (scanLoginSessionId && scanWorkflowStage === "idle") {
+      setScanWorkflowStage("scan-window-open");
+      return;
+    }
+    if (!latestCollectionJob) {
+      if (!scanLoginSessionId && scanWorkflowStage !== "capturing-session" && scanWorkflowStage !== "creating-job") {
+        setScanWorkflowStage("idle");
+      }
+      return;
+    }
+    if (latestCollectionJob.status === "failed") {
+      setScanWorkflowStage("job-failed");
+      return;
+    }
+    if (latestCollectionJob.status === "completed") {
+      setScanWorkflowStage("job-completed");
+      return;
+    }
+    if (latestCollectionJob.status === "running") {
+      setScanWorkflowStage("job-running");
+      return;
+    }
+    if (latestCollectionJob.status === "pending") {
+      setScanWorkflowStage("job-pending");
+    }
+  }, [latestCollectionJob, scanLoginSessionId, scanWorkflowStage]);
+
   const handleAuth = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setAuthError("");
@@ -743,26 +978,163 @@ export default function App() {
     setSamples([]);
     setAnalyses([]);
     setPatterns([]);
+    setActiveCollectionJobId("");
+    setScanLoginSessionId("");
+    setScanLoginStatus("idle");
+    setScanWorkflowStage("idle");
+  };
+
+  const submitCollectJob = async (overrides?: Record<string, unknown>) => {
+    const response = await apiFetch("/collect/jobs", {
+      method: "POST",
+      body: JSON.stringify({
+        ...collectForm,
+        ...(overrides || {}),
+      }),
+    });
+    if (response?.jobId) {
+      setActiveCollectionJobId(response.jobId);
+      setScanWorkflowStage(response?.status === "pending" ? "job-pending" : "job-running");
+    }
+    setWorkspaceMessage(
+      response?.status === "pending"
+        ? t(`采集任务 ${response?.jobId || ""} 已入队，工作区会自动刷新。`, `Collection job ${response?.jobId || ""} queued. The workspace will refresh automatically.`)
+        : response?.errorMessage
+          ? t(`采集任务返回问题：${response.errorMessage}`, `Collection job finished with issue: ${response.errorMessage}`)
+          : t(`采集任务 ${response?.jobId || ""} 已完成。`, `Collection job ${response?.jobId || ""} completed.`),
+    );
+    await refreshAll();
+    return response;
   };
 
   const handleCreateJob = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLoading(true);
+    setScanWorkflowStage("creating-job");
     try {
-      const response = await apiFetch("/collect/jobs", {
+      await submitCollectJob();
+    } catch (error) {
+      setScanWorkflowStage("job-failed");
+      setWorkspaceMessage(error instanceof Error ? error.message : t("创建采集任务失败。", "Unable to create collection job."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStartScanLogin = async () => {
+    setCollectForm((prev) => ({
+      ...prev,
+      collectorMode: "real",
+      providerId: "xiaohongshu-playwright",
+      keyword: prev.keyword?.trim() ? prev.keyword : "AI教育",
+    }));
+    setLoading(true);
+    setActiveCollectionJobId("");
+    setScanWorkflowStage("scan-window-open");
+    setWorkspaceMessage(
+      t(
+        "正在打开小红书扫码窗口，请稍等几秒；如果浏览器被挡住，请留意桌面上是否有新的浏览器窗口弹出。",
+        "Opening the Xiaohongshu scan window. Wait a few seconds and check whether a new browser window opened behind the current app.",
+      ),
+    );
+    try {
+      const response = await apiFetch("/platform-accounts/xiaohongshu/scan-login/start", {
         method: "POST",
-        body: JSON.stringify(collectForm),
+        body: JSON.stringify({ accountName: cookieForm.accountName, keyword: collectForm.keyword }),
+      });
+      setScanLoginSessionId(response?.sessionId || "");
+      setScanLoginStatus("waiting");
+      setScanWorkflowStage("scan-window-open");
+      setWorkspaceMessage(
+        t(
+          "小红书扫码窗口已经打开。请先在新窗口扫码并完成登录，完成后回到这里点击“扫码完成并开始抓取”。",
+          "The Xiaohongshu scan window is open. Finish scanning in the new window, then return here and click “Scan Complete & Start Collection”.",
+        ),
+      );
+    } catch (error) {
+      setScanWorkflowStage("idle");
+      setWorkspaceMessage(error instanceof Error ? error.message : t("打开扫码窗口失败。", "Unable to open the scan window."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCompleteScanLoginAndCollect = async () => {
+    if (!scanLoginSessionId) return;
+    setLoading(true);
+    setScanLoginStatus("capturing");
+    setScanWorkflowStage("capturing-session");
+    try {
+      const response = await apiFetch("/platform-accounts/xiaohongshu/scan-login/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          sessionId: scanLoginSessionId,
+          accountName: cookieForm.accountName,
+        }),
+      });
+      if (!response?.verified) {
+        throw new Error(
+          response?.errorMessage ||
+            t("扫码完成后仍未拿到可用登录态，请确认小红书窗口里已经真正登录成功。", "Scan completed but no valid login state was captured."),
+        );
+      }
+      setScanLoginSessionId("");
+      setScanLoginStatus("idle");
+      setScanWorkflowStage("creating-job");
+      await refreshAll();
+      const manualCapture =
+        response?.metadata?.manualCapture &&
+        typeof response.metadata.manualCapture === "object" &&
+        !Array.isArray(response.metadata.manualCapture)
+          ? response.metadata.manualCapture
+          : null;
+      await submitCollectJob(
+        manualCapture
+          ? {
+              manualSearchPageUrl: manualCapture.manualSearchPageUrl || undefined,
+              manualSearchRequestData: manualCapture.manualSearchRequestData || null,
+            }
+          : undefined,
+      );
+      await apiFetch("/platform-accounts/xiaohongshu/scan-login/cancel", {
+        method: "POST",
+        body: JSON.stringify({ sessionId: scanLoginSessionId }),
+      }).catch(() => {
+        // Ignore close failures; the capture session can still be cleaned up manually.
       });
       setWorkspaceMessage(
-        response?.status === "pending"
-          ? t(`采集任务 ${response?.jobId || ""} 已入队，工作区会自动刷新。`, `Collection job ${response?.jobId || ""} queued. The workspace will refresh automatically.`)
-          : response?.errorMessage
-            ? t(`采集任务返回问题：${response.errorMessage}`, `Collection job finished with issue: ${response.errorMessage}`)
-            : t(`采集任务 ${response?.jobId || ""} 已完成。`, `Collection job ${response?.jobId || ""} completed.`),
+        t(
+          "扫码完成，系统已读取你当前停留的小红书结果页，并按这个真实筛选状态开始抓取。采集任务创建成功后，扫码窗口会自动关闭。接下来请先看“采集任务”，再看“样本”。",
+          "Scan completed. ViralLab captured your current Xiaohongshu results page and started collection from that real filtered state. The scan window closes after the collection job is created. Next, review Collection Jobs, then Samples.",
+        ),
       );
-      await refreshAll();
     } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : t("创建采集任务失败。", "Unable to create collection job."));
+      setScanWorkflowStage("scan-window-open");
+      setWorkspaceMessage(
+        error instanceof Error
+          ? `${error.message} ${t("扫码窗口已保留，你可以继续在原窗口调整后再点一次“扫码完成并开始抓取”。", "The scan window stays open so you can keep adjusting and click “Scan Complete & Start Collection” again.")}`
+          : t("扫码完成后的自动接管失败。", "Unable to complete scan login and start collection."),
+      );
+    } finally {
+      setLoading(false);
+      setScanLoginStatus((prev) => (prev === "capturing" ? "waiting" : prev));
+    }
+  };
+
+  const handleCancelScanLogin = async () => {
+    if (!scanLoginSessionId) return;
+    setLoading(true);
+    try {
+      await apiFetch("/platform-accounts/xiaohongshu/scan-login/cancel", {
+        method: "POST",
+        body: JSON.stringify({ sessionId: scanLoginSessionId }),
+      });
+      setScanLoginSessionId("");
+      setScanLoginStatus("idle");
+      setScanWorkflowStage("idle");
+      setWorkspaceMessage(t("已关闭本次扫码窗口。", "Closed the current scan window."));
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : t("关闭扫码窗口失败。", "Unable to close the scan window."));
     } finally {
       setLoading(false);
     }
@@ -1053,10 +1425,10 @@ export default function App() {
           </div>
           <div className="process-strip">
             <div className="process-chip"><span>1</span>{t("平台接入", "Platform Access")}</div>
-            <div className="process-chip"><span>2</span>{t("创建采集任务", "Create Collection Job")}</div>
-            <div className="process-chip"><span>3</span>{t("查看样本", "Review Samples")}</div>
-            <div className="process-chip"><span>4</span>{t("分析与提炼", "Analyze & Pattern")}</div>
-            <div className="process-chip"><span>5</span>{t("生成草稿", "Generate Draft")}</div>
+            <div className="process-chip"><span>2</span>{t("扫码并开始抓取", "Scan & Start Collection")}</div>
+            <div className="process-chip"><span>3</span>{t("查看抓取状态", "Review Collection Status")}</div>
+            <div className="process-chip"><span>4</span>{t("查看样本", "Review Samples")}</div>
+            <div className="process-chip"><span>5</span>{t("分析与生成", "Analyze & Generate")}</div>
           </div>
           {workspaceMessage ? <p className="hero-copy compact-copy">{workspaceMessage}</p> : null}
         </section>
@@ -1067,30 +1439,17 @@ export default function App() {
               <div className="step-index">1</div>
               <div>
                 <h3>{t("先完成平台接入", "Set up platform access first")}</h3>
-                <p className="step-copy">{t("如果你要跑真实小红书采集，先把 Cookie 保存并验证。没有完成这一步，真实采集大概率会失败。", "For real Xiaohongshu collection, save and verify the cookie first. Without this step, real collection will usually fail.")}</p>
+                <p className="step-copy">{t("先准备好账号名称。推荐直接用扫码方式接管，不需要手动找 Cookie。", "Prepare the account name first. Recommended: use scan login auto-capture instead of manually finding cookies.")}</p>
               </div>
             </div>
-            <div className="focus-status-grid">
-              <div className="sample-card">
-                <strong>{t("真实采集状态", "Real collector status")}</strong>
-                <div className="pattern-meta">
-                  <span>{capabilities?.real.enabled ? t("已启用", "enabled") : t("未启用", "disabled")}</span>
-                  <span>{capabilities?.real.hasCookie ? `${t("Cookie", "cookie")} ${formatStatus(capabilities?.real.cookieStatus || "saved", locale)}` : t("缺少 Cookie", "cookie missing")}</span>
-                </div>
-                <span className="status-note">{capabilities?.real.verificationMessage || t("先保存并验证小红书 Cookie。", "Save and verify the Xiaohongshu cookie first.")}</span>
-              </div>
-              {platformAccounts[0] ? (
-                <div className="sample-card">
-                  <strong>{platformAccounts[0].accountName}</strong>
-                  <div className="pattern-meta">
-                    <span>{formatStatus(platformAccounts[0].cookieStatus, locale)}</span>
-                    <span>{platformAccounts[0].lastVerifiedAt || "--"}</span>
-                  </div>
-                  <span className="status-note">{translateKnownUiText(platformAccounts[0].verificationMessage, locale)}</span>
-                </div>
-              ) : null}
-            </div>
-            <form className="stack-form" onSubmit={handleSaveCookies}>
+            <div className="sample-card">
+              <strong>{t("扫码自动接管", "Scan login auto-capture")}</strong>
+              <p className="step-copy">
+                {t(
+                  "点“打开小红书扫码窗口”后，请在小红书窗口里完成扫码，并亲手筛好图文/视频、排序、发布时间。确认当前页就是你想抓的结果后，再回来点“扫码完成并开始抓取”。",
+                  "After opening the Xiaohongshu scan window, finish login and manually choose note type, sort, and publish time. Once the results page matches what you want, return here and click “Scan Complete & Start Collection”.",
+                )}
+              </p>
               <label>
                 {t("账号名称", "Account name")}
                 <input
@@ -1098,29 +1457,78 @@ export default function App() {
                   onChange={(event) => setCookieForm((prev) => ({ ...prev, accountName: event.target.value }))}
                 />
               </label>
-              <label>
-                {t("小红书 Cookie 内容", "Xiaohongshu cookie blob")}
-                <textarea
-                  rows={4}
-                  placeholder={t("粘贴导出的 Cookie 字符串或 JSON", "Paste exported cookie string or JSON here")}
-                  value={cookieForm.cookieBlob}
-                  onChange={(event) => setCookieForm((prev) => ({ ...prev, cookieBlob: event.target.value }))}
-                />
-              </label>
-              <p className="hint-text">
-                {t("请把浏览器里复制出来的整串 Cookie 粘贴到这个输入框，然后点击“保存采集 Cookie”。", "Paste the full browser cookie string into this box, then click “Save Collector Cookie”.")}
-              </p>
               <div className="action-row">
-                <button disabled={loading} type="submit">{t("保存采集 Cookie", "Save Collector Cookie")}</button>
                 <button
-                  className="secondary-btn"
-                  disabled={loading || platformAccounts.length === 0}
-                  onClick={handleVerifyCookie}
+                  disabled={loading || scanLoginStatus !== "idle"}
+                  onClick={handleStartScanLogin}
                   type="button"
                 >
-                  {t("验证 Cookie", "Verify Cookie")}
+                  {loading && scanLoginStatus === "idle"
+                    ? t("正在打开扫码窗口...", "Opening scan window...")
+                    : t("打开小红书扫码窗口", "Open Xiaohongshu Scan Window")}
                 </button>
+                {scanLoginSessionId ? (
+                  <>
+                    <button
+                      className="secondary-btn"
+                      disabled={loading || scanLoginStatus === "capturing"}
+                      onClick={handleCompleteScanLoginAndCollect}
+                      type="button"
+                    >
+                      {scanLoginStatus === "capturing"
+                        ? t("正在接管并开始抓取...", "Capturing login and starting collection...")
+                        : t("扫码完成并开始抓取", "Scan Complete & Start Collection")}
+                    </button>
+                    <button className="ghost-btn" disabled={loading} onClick={handleCancelScanLogin} type="button">
+                      {t("取消本次扫码", "Cancel Scan Session")}
+                    </button>
+                  </>
+                ) : null}
               </div>
+              <p className="hint-text">
+                {scanLoginSessionId
+                  ? t("扫码窗口打开后，不用回来填表。先在小红书里把筛选条件全部调好，再回来点击“扫码完成并开始抓取”。", "Once the scan window opens, do not fill forms here. Finish all filtering inside Xiaohongshu first, then return and click “Scan Complete & Start Collection”.")
+                  : t("推荐主流程：扫码 -> 在小红书里筛选 -> 回来点击开始抓取。", "Recommended flow: scan -> filter in Xiaohongshu -> return and start collection.")}
+              </p>
+              {workspaceMessage ? <p className="status-note">{workspaceMessage}</p> : null}
+            </div>
+            <form className="stack-form" onSubmit={handleSaveCookies}>
+              <details className="inline-details">
+                <summary>{t("备用方式：手动粘贴 Cookie", "Fallback: paste cookie manually")}</summary>
+                <p className="hint-text">
+                  {t("只有在扫码方式不可用时，再使用手动 Cookie。", "Use manual cookie paste only if scan login is unavailable.")}
+                </p>
+                <label>
+                  {t("账号名称", "Account name")}
+                  <input
+                    value={cookieForm.accountName}
+                    onChange={(event) => setCookieForm((prev) => ({ ...prev, accountName: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  {t("小红书 Cookie 内容", "Xiaohongshu cookie blob")}
+                  <textarea
+                    rows={4}
+                    placeholder={t("粘贴导出的 Cookie 字符串或 JSON", "Paste exported cookie string or JSON here")}
+                    value={cookieForm.cookieBlob}
+                    onChange={(event) => setCookieForm((prev) => ({ ...prev, cookieBlob: event.target.value }))}
+                  />
+                </label>
+                <p className="hint-text">
+                  {t("请把浏览器里复制出来的整串 Cookie 粘贴到这个输入框，然后点击“保存采集 Cookie”。", "Paste the full browser cookie string into this box, then click “Save Collector Cookie”.")}
+                </p>
+                <div className="action-row">
+                  <button disabled={loading} type="submit">{t("保存采集 Cookie", "Save Collector Cookie")}</button>
+                  <button
+                    className="secondary-btn"
+                    disabled={loading || platformAccounts.length === 0}
+                    onClick={handleVerifyCookie}
+                    type="button"
+                  >
+                    {t("验证 Cookie", "Verify Cookie")}
+                  </button>
+                </div>
+              </details>
             </form>
           </article>
 
@@ -1129,88 +1537,53 @@ export default function App() {
               <div className="step-head">
                 <div className="step-index">2</div>
                 <div>
-                  <h3>{t("创建采集任务", "Create Collection Job")}</h3>
-                  <p className="step-copy">{t("填写关键词并创建任务。创建之后不要重复点击，先看任务状态。", "Fill in the keyword and create the job. After creating it, do not click repeatedly. Watch the job status first.")}</p>
+                  <h3>{t("开始抓取并等待执行", "Start collection and wait for execution")}</h3>
+                  <p className="step-copy">{t("点完“扫码完成并开始抓取”后，先看这里。这里会告诉你当前是不是正在创建任务、正在抓取，还是已经完成。", "After clicking “Scan Complete & Start Collection”, watch this section first. It shows whether the job is being created, running, or completed.")}</p>
                 </div>
               </div>
             </div>
-            <form className="inline-form" onSubmit={handleCreateJob}>
-              <input
-                value={collectForm.keyword}
-                onChange={(event) => setCollectForm((prev) => ({ ...prev, keyword: event.target.value }))}
-                placeholder={t("关键词", "Keyword")}
-              />
-              <select
-                value={collectForm.sortBy}
-                onChange={(event) => setCollectForm((prev) => ({ ...prev, sortBy: event.target.value }))}
-              >
-                <option value="hot">{t("热门", "hot")}</option>
-                <option value="latest">{t("最新", "latest")}</option>
-              </select>
-              <select
-                value={collectForm.collectorMode}
-                onChange={(event) => {
-                  const collectorMode = event.target.value as "mock" | "real";
-                  setCollectForm((prev) => ({
-                    ...prev,
-                    collectorMode,
-                    providerId: collectorMode === "real" ? "xiaohongshu-playwright" : "mock-local",
-                  }));
-                }}
-              >
-                <option value="mock">{t("模拟", "mock")}</option>
-                <option value="real">{t("真实采集", "real collector")}</option>
-              </select>
-              <select
-                value={collectForm.providerId}
-                onChange={(event) => setCollectForm((prev) => ({ ...prev, providerId: event.target.value }))}
-              >
-                {collectForm.collectorMode === "mock" ? (
-                  <option value="mock-local">mock-local</option>
-                ) : (
-                  <>
-                    <option value="xiaohongshu-playwright">xiaohongshu-playwright</option>
-                    <option value="xiaohongshu-managed">xiaohongshu-managed</option>
-                  </>
-                )}
-              </select>
-              <input
-                type="number"
-                min={5}
-                max={50}
-                value={collectForm.targetCount}
-                onChange={(event) =>
-                  setCollectForm((prev) => ({ ...prev, targetCount: Number(event.target.value || 10) }))
-                }
-              />
-              <button
-                disabled={
-                  loading ||
-                  (collectForm.collectorMode === "real" &&
-                    (collectForm.providerId === "xiaohongshu-playwright"
-                      ? capabilities?.real.canCollect === false
-                      : selectedProviderEnabled === false))
-                }
-                type="submit"
-              >
-                {loading ? t("运行中...", "Running...") : t("创建任务", "Create Job")}
-              </button>
-            </form>
-            {collectForm.collectorMode === "real" && collectForm.providerId === "xiaohongshu-playwright" && capabilities?.real.canCollect === false ? (
-              <p className="hint-text">
-                {capabilities.real.verificationMessage || t("请先验证可用的小红书 Cookie，再运行真实采集。", "Verify a working Xiaohongshu cookie before running real collection.")}
-              </p>
-            ) : collectForm.collectorMode === "real" && collectForm.providerId === "xiaohongshu-playwright" && capabilities?.real.verificationRequired ? (
-              <p className="hint-text">{t("启动真实采集任务时会自动验证当前已保存的 Cookie。", "The saved cookie will be auto-verified when you start a real collection job.")}</p>
-            ) : collectForm.collectorMode === "real" && collectForm.providerId === "xiaohongshu-managed" ? (
-              <p className="hint-text">{t("托管 provider 的 UI 已接好，但后端仍然是预留位。", "Managed provider slot is wired in the UI, but the backend integration is still a stub.")}</p>
-            ) : null}
+            <div className="sample-card task-status-card">
+              <div className="task-status-topline">
+                <strong>{collectionStageModel.label}</strong>
+                <span className={`status-stage-badge ${collectionStageModel.stage}`}>{collectionStageModel.countText}</span>
+              </div>
+              <p className="step-copy">{collectionStageModel.description}</p>
+              <div className="stage-strip">
+                {collectionStageModel.steps.map((step) => (
+                  <div
+                    className={`stage-chip ${step.done ? "done" : ""} ${step.active ? "active" : ""} ${step.failed ? "failed" : ""}`}
+                    key={step.key}
+                  >
+                    <span>{step.label}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="collection-progress">
+                <div className="collection-progress-bar">
+                  <div className="collection-progress-fill" style={{ width: `${collectionStageModel.progress}%` }} />
+                </div>
+                <div className="pattern-meta">
+                  <span>{t("任务进度", "Task progress")}：{collectionStageModel.progress}%</span>
+                  {latestCollectionJob?.id ? <span>{t("当前任务", "Current job")}：{latestCollectionJob.id}</span> : null}
+                </div>
+              </div>
+            </div>
             <div className="sample-card next-step-card">
               <div className="panel-head inline-head">
                 <strong>{collectionNextStep.title}</strong>
                 <span className="pill">{t("下一步", "Next Step")}</span>
               </div>
               <p className="status-note next-step-copy">{collectionNextStep.body}</p>
+              {latestCollectionJob ? (
+                <div className="pattern-meta">
+                  <span>{t("状态", "Status")}：{formatStatus(latestCollectionJob.status, locale)}</span>
+                  <span>{t("进度", "Progress")}：{latestCollectionJob.progress}%</span>
+                  <span>{t("目标", "Target")}：{latestCollectionJob.targetCount}</span>
+                  {typeof latestCollectionJob.metadata?.extractedCount === "number" ? (
+                    <span>{t("已提取", "Extracted")}：{latestCollectionJob.metadata.extractedCount}</span>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="action-row">
                 {collectionNextStep.actions.map((action) => (
                   <a className="secondary-btn nav-action-link" href={action.href} key={action.label}>
@@ -1219,6 +1592,103 @@ export default function App() {
                 ))}
               </div>
             </div>
+            <details className="inline-details advanced-panel">
+              <summary>{t("高级模式：手动创建任务", "Advanced: create job manually")}</summary>
+              <form className="stack-form" onSubmit={handleCreateJob}>
+                <div className="field-grid collect-config-grid">
+                  <label>
+                    {t("关键词", "Keyword")}
+                    <input
+                      value={collectForm.keyword}
+                      onChange={(event) => setCollectForm((prev) => ({ ...prev, keyword: event.target.value }))}
+                      placeholder={t("例如：AI教育", "Example: AI education")}
+                    />
+                  </label>
+                  <label>
+                    {t("排序依据", "Sort by")}
+                    <select
+                      value={collectForm.sortBy}
+                      onChange={(event) => setCollectForm((prev) => ({ ...prev, sortBy: event.target.value }))}
+                    >
+                      <option value="hot">{t("热门", "hot")}</option>
+                      <option value="latest">{t("最新", "latest")}</option>
+                      <option value="most-liked">{t("最多点赞", "most liked")}</option>
+                      <option value="most-commented">{t("最多评论", "most commented")}</option>
+                      <option value="most-collected">{t("最多收藏", "most collected")}</option>
+                    </select>
+                  </label>
+                  <label>
+                    {t("笔记类型", "Note type")}
+                    <select
+                      value={collectForm.noteType}
+                      onChange={(event) => setCollectForm((prev) => ({ ...prev, noteType: event.target.value }))}
+                    >
+                      <option value="all">{t("不限", "all")}</option>
+                      <option value="image">{t("图文", "image")}</option>
+                      <option value="video">{t("视频", "video")}</option>
+                    </select>
+                  </label>
+                  <label>
+                    {t("发布时间", "Publish window")}
+                    <select
+                      value={collectForm.publishWindow}
+                      onChange={(event) => setCollectForm((prev) => ({ ...prev, publishWindow: event.target.value }))}
+                    >
+                      <option value="all">{t("不限", "all")}</option>
+                      <option value="day">{t("一天内", "within 1 day")}</option>
+                      <option value="week">{t("一周内", "within 1 week")}</option>
+                      <option value="half-year">{t("半年内", "within 6 months")}</option>
+                    </select>
+                  </label>
+                  <label>
+                    {t("采集模式", "Collection mode")}
+                    <select
+                      value={collectForm.collectorMode}
+                      onChange={(event) => {
+                        const collectorMode = event.target.value as "mock" | "real";
+                        setCollectForm((prev) => ({
+                          ...prev,
+                          collectorMode,
+                          providerId: collectorMode === "real" ? "xiaohongshu-playwright" : "mock-local",
+                        }));
+                      }}
+                    >
+                      <option value="mock">{t("模拟", "mock")}</option>
+                      <option value="real">{t("真实采集", "real collector")}</option>
+                    </select>
+                  </label>
+                  <label>
+                    {t("采集器", "Collector provider")}
+                    <select
+                      value={collectForm.providerId}
+                      onChange={(event) => setCollectForm((prev) => ({ ...prev, providerId: event.target.value }))}
+                    >
+                      {collectForm.collectorMode === "mock" ? (
+                        <option value="mock-local">mock-local</option>
+                      ) : (
+                        <>
+                          <option value="xiaohongshu-playwright">xiaohongshu-playwright</option>
+                          <option value="xiaohongshu-managed">xiaohongshu-managed</option>
+                        </>
+                      )}
+                    </select>
+                  </label>
+                  <label>
+                    {t("抓取数量", "Target count")}
+                    <input
+                      type="number"
+                      min={5}
+                      max={50}
+                      value={collectForm.targetCount}
+                      onChange={(event) =>
+                        setCollectForm((prev) => ({ ...prev, targetCount: Number(event.target.value || 10) }))
+                      }
+                    />
+                  </label>
+                </div>
+                <button disabled={loading} type="submit">{loading ? t("运行中...", "Running...") : t("创建任务", "Create Job")}</button>
+              </form>
+            </details>
             <div className="table-list">
               {jobs.slice(0, 3).map((job) => (
                 <div className="table-row" key={job.id}>
@@ -1228,7 +1698,9 @@ export default function App() {
                   </div>
                   <div>
                     <strong>{job.targetCount} {t("条样本", "samples")}</strong>
-                    <span>{formatStatus(job.sortBy, locale)} · {formatStatus(job.collectorMode, locale)} · {job.metadata?.provider || "--"}</span>
+                    <span>
+                      {formatStatus(job.sortBy, locale)} · {formatStatus(job.noteType, locale)} · {formatStatus(job.publishWindow, locale)} · {formatStatus(job.collectorMode, locale)} · {job.metadata?.provider || "--"}
+                    </span>
                   </div>
                   <div>
                     <strong>{job.progress}%</strong>
@@ -1245,6 +1717,26 @@ export default function App() {
                     ) : job.metadata?.extractedCount ? (
                       <span>
                         {t("已提取", "extracted")} {job.metadata.extractedCount} {t("条，来源", "via")} {job.metadata.extractedFrom || t("未知", "unknown")}
+                      </span>
+                    ) : null}
+                    {job.metadata?.appliedSearchFilters ? (
+                      <span>
+                        {t("真实筛选", "live filters")}{" "}
+                        {[
+                          job.metadata.appliedSearchFilters.sort?.name,
+                          job.metadata.appliedSearchFilters.noteType?.name,
+                          job.metadata.appliedSearchFilters.publishWindow?.name,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                        {" · ids: "}
+                        {[
+                          job.metadata.appliedSearchFilters.sort?.id,
+                          job.metadata.appliedSearchFilters.noteType?.id,
+                          job.metadata.appliedSearchFilters.publishWindow?.id,
+                        ]
+                          .filter(Boolean)
+                          .join(" / ")}
                       </span>
                     ) : null}
                     {typeof job.metadata?.normalizedItemCount === "number" || typeof job.metadata?.fallbackItemCount === "number" ? (
@@ -1286,7 +1778,9 @@ export default function App() {
                   <p className="step-copy">{t("任务完成后，先看这里。重点确认标题、正文、作者、发布时间和质量分是不是正常。", "After the job completes, start here. Confirm the title, body, author, publish time, and quality score first.")}</p>
                 </div>
               </div>
-              <span className="pill">{t("最新 10 条", "Latest 10")}</span>
+              <span className="pill">
+                {latestCollectionJob ? t("当前任务样本", "Current job samples") : t("最新 10 条", "Latest 10")}
+              </span>
             </div>
             {sampleQualityStats ? (
               <div className="focus-status-grid compact-focus-grid">
@@ -1310,12 +1804,20 @@ export default function App() {
                   key={sample.id}
                 >
                   <div className="sample-card-top">
-                    <div>
-                      <strong>{sample.title}</strong>
+                    <div className="sample-main">
+                      <strong className="sample-title">{sample.title}</strong>
                       <span>{sample.keyword}</span>
                     </div>
                     {sample.coverImageUrl ? (
-                      <img className="sample-cover" src={sample.coverImageUrl} alt={sample.title} />
+                      <img
+                        className="sample-cover"
+                        src={sample.coverImageUrl}
+                        alt=""
+                        loading="lazy"
+                        onError={(event) => {
+                          event.currentTarget.style.display = "none";
+                        }}
+                      />
                     ) : null}
                   </div>
                   <div className="audit-meta">
@@ -1332,14 +1834,34 @@ export default function App() {
                     )}
                   </div>
                   <div className="pattern-meta">
-                    <span>{sample.likeCount} {t("点赞", "likes")} · {formatStatus(sample.collectorMode, locale)} · {sample.provider}</span>
-                    <span>{sample.authorName || "--"} · {sample.publishTime || "--"}</span>
+                    <span>{t("标题", "Title")}：{sample.title || "--"}</span>
+                    <span>{t("作者", "Author")}：{sample.authorName || "--"}</span>
                   </div>
-                  <p className="sample-summary">{sample.contentText || sample.contentSummary}</p>
+                  <div className="pattern-meta">
+                    <span>{t("发布日期", "Publish date")}：{formatPublishDate(sample.publishTime)}</span>
+                    <span>{t("类型", "Type")}：{formatSampleType(sample, locale)}</span>
+                  </div>
+                  <div className="pattern-meta">
+                    <span>{t("点赞", "Likes")}：{formatCount(sample.likeCount, locale)}</span>
+                    <span>{t("评论", "Comments")}：{formatCount(sample.commentCount, locale)}</span>
+                    <span>{t("收藏", "Collects")}：{formatCount(sample.collectCount, locale)}</span>
+                    <span>{t("转发", "Shares")}：{formatCount(sample.shareCount, locale)}</span>
+                  </div>
+                  <div className="pattern-meta">
+                    <span>{t("采集来源", "Collector")}：{formatStatus(sample.collectorMode, locale)} · {sample.provider}</span>
+                    <span>{buildXiaohongshuSearchHint(sample, locale)}</span>
+                  </div>
+                  <p className="sample-summary">{sample.resolvedContentText || sample.contentText || sample.contentSummary}</p>
+                  {sample.longImageCandidate ? (
+                    <p className="hint-text">{t("这条内容已识别为长图文，系统会优先尝试图片 OCR。", "This note is detected as a long-image post. OCR text will be preferred.")}</p>
+                  ) : null}
+                  {sample.contentType === "video" && (sample.transcriptText || sample.frameOcrTexts.length) ? (
+                    <p className="hint-text">{t("这条视频已补充页面帧 OCR 文本，可继续用于后续分析。", "This video has frame OCR text and can continue into analysis.")}</p>
+                  ) : null}
                   <div className="pattern-meta">
                     <span>{sample.tags.join(" · ")}</span>
                     <span>
-                      {sample.mediaImageUrls.length} {t("张图片", "images")} · {sample.mediaVideoUrls.length} {t("个视频", "videos")}
+                      {sample.mediaImageUrls.length} {t("张图片", "images")} · {(sample.mediaVideoUrls.length || (sample.hasVideoMedia ? 1 : 0))} {t("个视频", "videos")}
                     </span>
                   </div>
                   <a className="sample-link" href={sample.sourceUrl} target="_blank" rel="noreferrer">
@@ -1347,6 +1869,24 @@ export default function App() {
                   </a>
                 </div>
               ))}
+              {!visibleSamples.length ? (
+                <div className="sample-card">
+                  <strong>{t("当前任务还没有样本结果", "The current job has no samples yet")}</strong>
+                  <p className="step-copy">
+                    {latestCollectionJob
+                      ? latestCollectionJob.status === "running" || latestCollectionJob.status === "pending"
+                        ? t(
+                            "当前任务仍在处理中。这里现在只显示这一次任务的样本，不再混入旧任务结果。请先看上面的任务状态。",
+                            "The current job is still processing. This area now shows samples from this run only and no longer mixes old results. Check the job status above first.",
+                          )
+                        : t(
+                            "当前任务没有产出样本，所以这里不会再显示旧任务的内容。请先修复这一次任务，再重新抓取。",
+                            "This job produced no samples, so older runs are no longer shown here. Fix this run first, then collect again.",
+                          )
+                      : t("先运行一个采集任务，再来这里查看样本。", "Run a collection job first, then review samples here.")}
+                  </p>
+                </div>
+              ) : null}
             </div>
           </article>
 
@@ -1361,7 +1901,7 @@ export default function App() {
               </div>
             </div>
             <div className="action-row">
-              <button onClick={handleAnalyze} disabled={loading || samples.length === 0}>{t("分析前 5 条样本", "Analyze First 5 Samples")}</button>
+              <button onClick={handleAnalyze} disabled={loading || visibleSamples.length === 0}>{t("分析前 5 条样本", "Analyze First 5 Samples")}</button>
               <button className="secondary-btn" onClick={handleExtractPattern} disabled={loading || analyses.length === 0}>
                 {t("提炼 Pattern", "Extract Pattern")}
               </button>

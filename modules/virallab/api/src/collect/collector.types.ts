@@ -4,14 +4,44 @@ export type CollectorProviderId =
   | "xiaohongshu-playwright"
   | "xiaohongshu-managed";
 
+export type CollectSortBy =
+  | "hot"
+  | "latest"
+  | "most-liked"
+  | "most-commented"
+  | "most-collected";
+
+export type CollectNoteType = "all" | "image" | "video";
+export type CollectPublishWindow = "all" | "day" | "week" | "half-year";
+export type SampleContentType = "image" | "video";
+export type SampleContentFormat =
+  | "single-image-note"
+  | "multi-image-note"
+  | "long-image-note"
+  | "video-note";
+
 export type CollectRequest = {
   keyword: string;
-  sortBy: "hot" | "latest";
+  sortBy: CollectSortBy;
+  noteType: CollectNoteType;
+  publishWindow: CollectPublishWindow;
   targetCount: number;
+  manualSearchPageUrl?: string;
+  manualSearchRequestData?: Record<string, unknown> | null;
 };
 
 export type CollectorContext = {
   cookieBlob?: string;
+  onProgress?: (update: CollectorProgressUpdate) => Promise<void> | void;
+};
+
+export type CollectorProgressUpdate = {
+  progress: number;
+  stage?: string;
+  message?: string;
+  extractedCount?: number;
+  totalCount?: number;
+  metadata?: Record<string, unknown>;
 };
 
 export type CollectedSampleInput = {
@@ -19,6 +49,9 @@ export type CollectedSampleInput = {
   title: string;
   contentText: string;
   contentSummary: string;
+  contentType: SampleContentType;
+  contentFormat: SampleContentFormat;
+  longImageCandidate: boolean;
   authorName: string;
   authorId: string;
   publishTime: string;
@@ -31,6 +64,14 @@ export type CollectedSampleInput = {
   coverImageUrl: string;
   mediaImageUrls: string[];
   mediaVideoUrls: string[];
+  hasVideoMedia: boolean;
+  ocrTextRaw: string;
+  ocrTextClean: string;
+  transcriptText: string;
+  transcriptSegments: string[];
+  frameOcrTexts: string[];
+  resolvedContentText: string;
+  resolvedContentSource: "note-body" | "image-ocr" | "video-frame-ocr" | "merged";
 };
 
 export type CollectorRunResult = {

@@ -5,6 +5,17 @@ import { ViralLabLlmService } from "../llm/llm.service";
 import { PrismaService } from "../prisma.service";
 import { computeSampleQuality, parseJsonArray } from "../samples/sample-quality";
 
+const toSortableTime = (value: unknown) => {
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  return 0;
+};
+
 const inferHook = (title: string) => {
   if (title.includes("为什么")) return "question-hook";
   if (title.includes("不要")) return "warning-hook";
@@ -21,9 +32,12 @@ const inferEmotion = (title: string) => {
 const inferContentFormat = (sample: {
   mediaImageUrls?: string[];
   mediaVideoUrls?: string[];
+  hasVideoMedia?: boolean;
   contentText?: string;
 }) => {
-  const hasVideo = Array.isArray(sample.mediaVideoUrls) && sample.mediaVideoUrls.length > 0;
+  const hasVideo =
+    sample.hasVideoMedia === true ||
+    (Array.isArray(sample.mediaVideoUrls) && sample.mediaVideoUrls.length > 0);
   const imageCount = Array.isArray(sample.mediaImageUrls) ? sample.mediaImageUrls.length : 0;
   const textLength = sample.contentText?.trim().length || 0;
   if (hasVideo) return "video-note";
@@ -117,15 +131,29 @@ export class AnalyzeService {
     };
   }
 
+  private parseJson(value: string | null) {
+    if (!value) return null;
+    try {
+      return JSON.parse(value) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
   private async getSampleById(sampleId: string) {
     if (this.prisma.isEnabled()) {
       const item = await this.prisma.contentSample.findUnique({ where: { id: sampleId } });
       if (!item) return null;
+      const parsedPayload = this.parseJson(item.parsedPayloadJson) || {};
+      const resolvedContentText =
+        typeof parsedPayload.resolvedContentText === "string" && parsedPayload.resolvedContentText
+          ? parsedPayload.resolvedContentText
+          : item.contentText || "";
       return {
         id: item.id,
         userId: item.userId,
         title: item.title,
-        contentText: item.contentText || "",
+        contentText: resolvedContentText,
         contentSummary: item.contentSummary || "",
         keyword: item.keyword || "",
         platformContentId: item.platformContentId || "",
@@ -141,6 +169,7 @@ export class AnalyzeService {
         coverImageUrl: item.coverImageUrl || "",
         mediaImageUrls: parseJsonArray(item.mediaImageUrlsJson),
         mediaVideoUrls: parseJsonArray(item.mediaVideoUrlsJson),
+        hasVideoMedia: Boolean(parsedPayload.hasVideoMedia),
       };
     }
 
@@ -229,7 +258,7 @@ export class AnalyzeService {
     const db = await this.store.read();
     return {
       success: true,
-      items: db.analyses.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      items: db.analyses.slice().sort((a, b) => toSortableTime(b.createdAt) - toSortableTime(a.createdAt)),
     };
   }
 
@@ -546,7 +575,7 @@ export class AnalyzeService {
           tags: b.tags || [],
         }).qualityScore;
         if (qualityB !== qualityA) return qualityB - qualityA;
-        return b.createdAt.localeCompare(a.createdAt);
+        return toSortableTime(b.createdAt) - toSortableTime(a.createdAt);
       })
       .slice(0, 5)
       .map((item) => item.id);

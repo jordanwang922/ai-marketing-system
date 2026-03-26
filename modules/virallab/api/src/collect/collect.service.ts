@@ -4,9 +4,27 @@ import { ViralLabStoreService } from "../store/store.service";
 import { ViralLabCollectionJob, ViralLabPlatformAccount, ViralLabSample } from "../store/types";
 import { MockCollector } from "./mock.collector";
 import { XiaohongshuCollector } from "./xiaohongshu.collector";
-import { CollectorMode, CollectorProviderId, ViralLabCollectorProvider } from "./collector.types";
+import {
+  CollectNoteType,
+  CollectPublishWindow,
+  CollectSortBy,
+  CollectorMode,
+  CollectorProviderId,
+  ViralLabCollectorProvider,
+} from "./collector.types";
 import { PrismaService } from "../prisma.service";
 import { XiaohongshuManagedCollector } from "./managed.collector";
+
+const toSortableTime = (value: unknown) => {
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  return 0;
+};
 
 @Injectable()
 export class CollectService implements OnModuleInit {
@@ -45,14 +63,81 @@ export class CollectService implements OnModuleInit {
   }
 
   private normalizeJob<T extends ViralLabCollectionJob>(job: T) {
+    const metadata = this.parseMetadata(job.metadataJson);
     return {
       ...job,
-      metadata: this.parseMetadata(job.metadataJson),
+      noteType:
+        job.noteType ||
+        (typeof metadata?.noteType === "string" ? (metadata.noteType as ViralLabCollectionJob["noteType"]) : "all"),
+      publishWindow:
+        job.publishWindow ||
+        (typeof metadata?.publishWindow === "string"
+          ? (metadata.publishWindow as ViralLabCollectionJob["publishWindow"])
+          : "all"),
+      metadata,
     };
   }
 
   private getTimestamp() {
     return new Date().toISOString();
+  }
+
+  private deriveManualSelections(
+    requestData: Record<string, unknown> | null | undefined,
+    fallback: { keyword: string; sortBy: CollectSortBy; noteType: CollectNoteType; publishWindow: CollectPublishWindow },
+  ) {
+    if (!requestData || typeof requestData !== "object") {
+      return fallback;
+    }
+
+    const sortMap: Record<string, CollectSortBy> = {
+      general: "hot",
+      time_descending: "latest",
+      popularity_descending: "most-liked",
+      comment_descending: "most-commented",
+      collect_descending: "most-collected",
+    };
+    const noteTypeMap: Record<string, CollectNoteType> = {
+      "1": "video",
+      "2": "image",
+      "视频笔记": "video",
+      视频: "video",
+      "普通笔记": "image",
+      图文: "image",
+      不限: "all",
+    };
+    const publishWindowMap: Record<string, CollectPublishWindow> = {
+      一天内: "day",
+      一周内: "week",
+      半年内: "half-year",
+      不限: "all",
+    };
+
+    const next = { ...fallback };
+    if (typeof requestData.keyword === "string" && requestData.keyword.trim()) {
+      next.keyword = requestData.keyword.trim();
+    }
+    if (typeof requestData.sort === "string" && sortMap[requestData.sort]) {
+      next.sortBy = sortMap[requestData.sort];
+    }
+    if (typeof requestData.note_type === "number" && noteTypeMap[String(requestData.note_type)]) {
+      next.noteType = noteTypeMap[String(requestData.note_type)];
+    }
+
+    const filters = Array.isArray(requestData.filters) ? requestData.filters : [];
+    for (const filter of filters) {
+      if (!filter || typeof filter !== "object") continue;
+      const type = typeof filter.type === "string" ? filter.type : "";
+      const firstTag = Array.isArray(filter.tags) ? String(filter.tags[0] || "") : "";
+      if (type === "filter_note_type" && noteTypeMap[firstTag]) {
+        next.noteType = noteTypeMap[firstTag];
+      }
+      if (type === "filter_note_time" && publishWindowMap[firstTag]) {
+        next.publishWindow = publishWindowMap[firstTag];
+      }
+    }
+
+    return next;
   }
 
   private getProviders() {
@@ -81,6 +166,76 @@ export class CollectService implements OnModuleInit {
       reason,
       ...extra,
     };
+  }
+
+  private buildCollectionJobMetadata(
+    job: Pick<ViralLabCollectionJob, "noteType" | "publishWindow" | "sortBy">,
+    providerMetadata: Record<string, unknown>,
+    extra?: Record<string, unknown>,
+  ) {
+    return JSON.stringify({
+      ...providerMetadata,
+      noteType: job.noteType,
+      publishWindow: job.publishWindow,
+      sortBy: job.sortBy,
+      ...(extra || {}),
+    });
+  }
+
+  private serializeSampleParsedPayload(sample: ViralLabSample) {
+    return JSON.stringify({
+      contentType: sample.contentType,
+      hasVideoMedia: sample.hasVideoMedia,
+      contentFormat: sample.contentFormat,
+      longImageCandidate: sample.longImageCandidate,
+      ocrTextRaw: sample.ocrTextRaw,
+      ocrTextClean: sample.ocrTextClean,
+      transcriptText: sample.transcriptText,
+      transcriptSegments: sample.transcriptSegments,
+      frameOcrTexts: sample.frameOcrTexts,
+      resolvedContentText: sample.resolvedContentText,
+      resolvedContentSource: sample.resolvedContentSource,
+    });
+  }
+
+  private parseSampleParsedPayload(value: string | null) {
+    const parsed = this.parseMetadata(value);
+    return {
+      contentType: parsed?.contentType === "video" ? "video" : "image",
+      hasVideoMedia: Boolean(parsed?.hasVideoMedia),
+      contentFormat:
+        typeof parsed?.contentFormat === "string" ? parsed.contentFormat : "single-image-note",
+      longImageCandidate: Boolean(parsed?.longImageCandidate),
+      ocrTextRaw: typeof parsed?.ocrTextRaw === "string" ? parsed.ocrTextRaw : "",
+      ocrTextClean: typeof parsed?.ocrTextClean === "string" ? parsed.ocrTextClean : "",
+      transcriptText: typeof parsed?.transcriptText === "string" ? parsed.transcriptText : "",
+      transcriptSegments: Array.isArray(parsed?.transcriptSegments)
+        ? parsed.transcriptSegments.map((item) => String(item))
+        : [],
+      frameOcrTexts: Array.isArray(parsed?.frameOcrTexts)
+        ? parsed.frameOcrTexts.map((item) => String(item))
+        : [],
+      resolvedContentText: typeof parsed?.resolvedContentText === "string" ? parsed.resolvedContentText : "",
+      resolvedContentSource:
+        parsed?.resolvedContentSource === "image-ocr" ||
+        parsed?.resolvedContentSource === "video-frame-ocr" ||
+        parsed?.resolvedContentSource === "merged"
+          ? parsed.resolvedContentSource
+          : "note-body",
+    } as Pick<
+      ViralLabSample,
+      | "contentType"
+      | "hasVideoMedia"
+      | "contentFormat"
+      | "longImageCandidate"
+      | "ocrTextRaw"
+      | "ocrTextClean"
+      | "transcriptText"
+      | "transcriptSegments"
+      | "frameOcrTexts"
+      | "resolvedContentText"
+      | "resolvedContentSource"
+    >;
   }
 
   private async resolveUserId(token?: string) {
@@ -193,6 +348,10 @@ export class CollectService implements OnModuleInit {
       title: sample.title,
       contentText: sample.contentText,
       contentSummary: sample.contentSummary,
+      contentType: sample.contentType,
+      hasVideoMedia: sample.hasVideoMedia,
+      contentFormat: sample.contentFormat,
+      longImageCandidate: sample.longImageCandidate,
       authorName: sample.authorName,
       authorId: sample.authorId,
       publishTime: sample.publishTime,
@@ -205,6 +364,13 @@ export class CollectService implements OnModuleInit {
       coverImageUrl: sample.coverImageUrl,
       mediaImageUrls: sample.mediaImageUrls,
       mediaVideoUrls: sample.mediaVideoUrls,
+      ocrTextRaw: sample.ocrTextRaw,
+      ocrTextClean: sample.ocrTextClean,
+      transcriptText: sample.transcriptText,
+      transcriptSegments: sample.transcriptSegments,
+      frameOcrTexts: sample.frameOcrTexts,
+      resolvedContentText: sample.resolvedContentText,
+      resolvedContentSource: sample.resolvedContentSource,
       status: "active",
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -358,7 +524,7 @@ export class CollectService implements OnModuleInit {
     const jobs = db.collectionJobs
       .filter((item) => item.userId === userId)
       .slice()
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      .sort((a, b) => toSortableTime(b.createdAt) - toSortableTime(a.createdAt));
     return {
       success: true,
       items: jobs.map((job) => this.normalizeJob(job)),
@@ -378,33 +544,47 @@ export class CollectService implements OnModuleInit {
       return {
         success: true,
         item: job ? this.mapCollectionJobRecord(job) : null,
-        samples: samples.map((item) => ({
-          id: item.id,
-          jobId: item.jobId || "",
-          userId: item.userId,
-          platform: item.platform as "xiaohongshu",
-          collectorMode: item.collectorMode as "mock" | "real",
-          keyword: item.keyword || "",
-          platformContentId: item.platformContentId || "",
-          title: item.title,
-          contentText: item.contentText || "",
-          contentSummary: item.contentSummary || "",
-          authorName: item.authorName || "",
-          authorId: item.authorId || "",
-          publishTime: item.publishTime?.toISOString() || "",
-          likeCount: item.likeCount,
-          commentCount: item.commentCount,
-          collectCount: item.collectCount,
-          shareCount: item.shareCount,
-          tags: this.parseStringArray(item.tagsJson),
-          sourceUrl: item.sourceUrl || "",
-          coverImageUrl: item.coverImageUrl || "",
-          mediaImageUrls: this.parseStringArray(item.mediaImageUrlsJson),
-          mediaVideoUrls: this.parseStringArray(item.mediaVideoUrlsJson),
-          status: item.status as "active",
-          createdAt: item.createdAt.toISOString(),
-          updatedAt: item.updatedAt.toISOString(),
-        })),
+        samples: samples.map((item) => {
+          const parsedPayload = this.parseSampleParsedPayload(item.parsedPayloadJson);
+          return {
+            id: item.id,
+            jobId: item.jobId || "",
+            userId: item.userId,
+            platform: item.platform as "xiaohongshu",
+            collectorMode: item.collectorMode as "mock" | "real",
+            keyword: item.keyword || "",
+            platformContentId: item.platformContentId || "",
+            title: item.title,
+            contentText: item.contentText || "",
+            contentSummary: item.contentSummary || "",
+            contentType: parsedPayload.contentType,
+            hasVideoMedia: parsedPayload.hasVideoMedia,
+            contentFormat: parsedPayload.contentFormat as ViralLabSample["contentFormat"],
+            longImageCandidate: parsedPayload.longImageCandidate,
+            authorName: item.authorName || "",
+            authorId: item.authorId || "",
+            publishTime: item.publishTime?.toISOString() || "",
+            likeCount: item.likeCount,
+            commentCount: item.commentCount,
+            collectCount: item.collectCount,
+            shareCount: item.shareCount,
+            tags: this.parseStringArray(item.tagsJson),
+            sourceUrl: item.sourceUrl || "",
+            coverImageUrl: item.coverImageUrl || "",
+            mediaImageUrls: this.parseStringArray(item.mediaImageUrlsJson),
+            mediaVideoUrls: this.parseStringArray(item.mediaVideoUrlsJson),
+            ocrTextRaw: parsedPayload.ocrTextRaw,
+            ocrTextClean: parsedPayload.ocrTextClean,
+            transcriptText: parsedPayload.transcriptText,
+            transcriptSegments: parsedPayload.transcriptSegments,
+            frameOcrTexts: parsedPayload.frameOcrTexts,
+            resolvedContentText: parsedPayload.resolvedContentText,
+            resolvedContentSource: parsedPayload.resolvedContentSource as ViralLabSample["resolvedContentSource"],
+            status: item.status as "active",
+            createdAt: item.createdAt.toISOString(),
+            updatedAt: item.updatedAt.toISOString(),
+          };
+        }),
       };
     }
 
@@ -445,8 +625,48 @@ export class CollectService implements OnModuleInit {
         providerId: typeof currentMetadata?.provider === "string" ? (currentMetadata.provider as CollectorProviderId) : undefined,
       });
       const result = await provider.collect(
-        { keyword: job.keyword, sortBy: job.sortBy, targetCount: job.targetCount },
-        { cookieBlob: account?.cookieBlob },
+        {
+          keyword: job.keyword,
+          sortBy: job.sortBy,
+          noteType: job.noteType,
+          publishWindow: job.publishWindow,
+          targetCount: job.targetCount,
+          manualSearchPageUrl:
+            typeof currentMetadata?.manualSearchPageUrl === "string" ? currentMetadata.manualSearchPageUrl : undefined,
+          manualSearchRequestData:
+            currentMetadata?.manualSearchRequestData &&
+            typeof currentMetadata.manualSearchRequestData === "object" &&
+            !Array.isArray(currentMetadata.manualSearchRequestData)
+              ? (currentMetadata.manualSearchRequestData as Record<string, unknown>)
+              : null,
+        },
+        {
+          cookieBlob: account?.cookieBlob,
+          onProgress: async (update) => {
+            await this.updateCollectionJobRecord(jobId, (current) => {
+              const timestamp = this.getTimestamp();
+              const existingMetadata = this.parseMetadata(current.metadataJson);
+              current.status = "running";
+              current.progress = Math.max(10, Math.min(99, Number(update.progress || current.progress || 10)));
+              current.updatedAt = timestamp;
+              current.metadataJson = JSON.stringify({
+                ...(existingMetadata || {}),
+                progressStage: update.stage || existingMetadata?.progressStage || null,
+                progressMessage: update.message || existingMetadata?.progressMessage || null,
+                extractedCount:
+                  typeof update.extractedCount === "number"
+                    ? update.extractedCount
+                    : existingMetadata?.extractedCount,
+                targetCount:
+                  typeof update.totalCount === "number"
+                    ? update.totalCount
+                    : existingMetadata?.targetCount || current.targetCount,
+                ...(update.metadata || {}),
+              });
+              return current;
+            });
+          },
+        },
       );
 
       const timestamp = this.getTimestamp();
@@ -465,6 +685,8 @@ export class CollectService implements OnModuleInit {
             title: sample.title,
             contentText: sample.contentText,
             contentSummary: sample.contentSummary,
+            rawPayloadJson: JSON.stringify(sample),
+            parsedPayloadJson: this.serializeSampleParsedPayload(sample),
             authorName: sample.authorName,
             authorId: sample.authorId,
             publishTime: sample.publishTime ? new Date(sample.publishTime) : null,
@@ -555,11 +777,15 @@ export class CollectService implements OnModuleInit {
 
   async createJob(payload: {
     keyword?: string;
-    sortBy?: "hot" | "latest";
+    sortBy?: CollectSortBy;
+    noteType?: CollectNoteType;
+    publishWindow?: CollectPublishWindow;
     targetCount?: number;
     collectorMode?: CollectorMode;
     providerId?: CollectorProviderId;
     token?: string;
+    manualSearchPageUrl?: string;
+    manualSearchRequestData?: Record<string, unknown> | null;
   }) {
     const userId = await this.resolveUserId(payload.token);
     const collectorMode = payload.collectorMode || "mock";
@@ -569,8 +795,16 @@ export class CollectService implements OnModuleInit {
     });
     const account = await this.getPlatformAccount(userId, "xiaohongshu");
     const targetCount = Math.max(5, Math.min(50, Number(payload.targetCount || 10)));
-    const keyword = String(payload.keyword || "").trim();
-    const sortBy = payload.sortBy || "hot";
+    const manualSelections = this.deriveManualSelections(payload.manualSearchRequestData, {
+      keyword: String(payload.keyword || "").trim(),
+      sortBy: payload.sortBy || "hot",
+      noteType: payload.noteType || "all",
+      publishWindow: payload.publishWindow || "all",
+    });
+    const keyword = manualSelections.keyword;
+    const sortBy = manualSelections.sortBy;
+    const noteType = manualSelections.noteType;
+    const publishWindow = manualSelections.publishWindow;
 
     if (collectorMode === "real") {
       const usesLocalCookie = provider.id === "xiaohongshu-playwright";
@@ -637,6 +871,8 @@ export class CollectService implements OnModuleInit {
       platform: "xiaohongshu",
       keyword,
       sortBy,
+      noteType,
+      publishWindow,
       collectorMode,
       targetCount,
       status: "pending",
@@ -644,7 +880,19 @@ export class CollectService implements OnModuleInit {
       startedAt: null,
       finishedAt: null,
       errorMessage: null,
-      metadataJson: JSON.stringify(this.buildProviderMetadata(provider, "queued")),
+      metadataJson: this.buildCollectionJobMetadata(
+        { noteType, publishWindow, sortBy },
+        this.buildProviderMetadata(provider, "queued"),
+        {
+          manualSearchPageUrl: payload.manualSearchPageUrl || null,
+          manualSearchRequestData:
+            payload.manualSearchRequestData &&
+            typeof payload.manualSearchRequestData === "object" &&
+            !Array.isArray(payload.manualSearchRequestData)
+              ? payload.manualSearchRequestData
+              : null,
+        },
+      ),
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -659,6 +907,8 @@ export class CollectService implements OnModuleInit {
         keyword: job.keyword,
         targetCount: job.targetCount,
         collectorMode,
+        noteType,
+        publishWindow,
         status: "pending",
       }),
       createdAt: timestamp,
@@ -783,7 +1033,7 @@ export class CollectService implements OnModuleInit {
     const latestRealJob = db.collectionJobs
       .filter((item) => item.userId === userId && item.collectorMode === "real")
       .slice()
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      .sort((a, b) => toSortableTime(b.createdAt) - toSortableTime(a.createdAt))[0];
 
     const verificationMetadata = account?.verificationMetadataJson
       ? this.parseMetadata(account.verificationMetadataJson)
@@ -835,12 +1085,15 @@ export class CollectService implements OnModuleInit {
     createdAt: Date;
     updatedAt: Date;
   }) {
+    const metadata = this.parseMetadata(item.metadataJson);
     return this.normalizeJob({
       id: item.id,
       userId: item.userId,
       platform: item.platform as "xiaohongshu",
       keyword: item.keyword,
-      sortBy: item.sortBy as "hot" | "latest",
+      sortBy: item.sortBy as CollectSortBy,
+      noteType: (metadata?.noteType as ViralLabCollectionJob["noteType"]) || "all",
+      publishWindow: (metadata?.publishWindow as ViralLabCollectionJob["publishWindow"]) || "all",
       collectorMode: item.collectorMode as "mock" | "real",
       targetCount: item.targetCount,
       status: item.status as ViralLabCollectionJob["status"],

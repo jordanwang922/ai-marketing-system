@@ -2,6 +2,8 @@ import dotenv from "dotenv";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { chromium, request as playwrightRequest } from "playwright";
 
 dotenv.config();
@@ -10,9 +12,60 @@ const payload = process.argv[2] ? JSON.parse(process.argv[2]) : {};
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ARTIFACTS_DIR = path.resolve(__dirname, "../artifacts");
+const VISION_OCR_RUNNER = path.resolve(__dirname, "./vision-ocr.swift");
 const VERIFY_LOGIN_TEXT = "登录后查看搜索结果";
+const execFileAsync = promisify(execFile);
+const PROGRESS_FILE_PATH =
+  typeof payload.progressFilePath === "string" && payload.progressFilePath.trim()
+    ? payload.progressFilePath.trim()
+    : null;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const withTimeout = async (promise, ms, fallbackValue) => {
+  let timeoutId = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((resolve) => {
+        timeoutId = setTimeout(() => resolve(fallbackValue), ms);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+};
+
+const humanPause = async (min = 350, max = 1200) => {
+  const lower = Math.max(0, Number(min) || 0);
+  const upper = Math.max(lower, Number(max) || lower);
+  const duration = lower + Math.floor(Math.random() * (upper - lower + 1));
+  await delay(duration);
+};
+
+const writeProgress = async (update = {}) => {
+  if (!PROGRESS_FILE_PATH) return;
+  try {
+    await fs.writeFile(
+      PROGRESS_FILE_PATH,
+      JSON.stringify({
+        ...update,
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf8",
+    );
+  } catch {
+    // ignore progress write failures
+  }
+};
+
+const safeUnlink = async (filePath) => {
+  try {
+    await fs.unlink(filePath);
+  } catch {
+    // ignore cleanup failures
+  }
+};
 
 const fail = (message, reason, extras = {}) => {
   process.stdout.write(
@@ -110,6 +163,206 @@ const collectCookieSignatureInputs = (cookieBlob) => {
     ),
     allRequiredPresent: requiredKeys.every((key) => Boolean(cookieMap[key])),
   };
+};
+
+const SEARCH_SORT_ID_MAP = {
+  hot: "general",
+  latest: "time_descending",
+  "most-liked": "popularity_descending",
+  "most-commented": "comment_descending",
+  "most-collected": "collect_descending",
+};
+
+const SEARCH_NOTE_TYPE_VALUE_MAP = {
+  all: 0,
+  video: 1,
+  image: 2,
+};
+
+const SEARCH_FILTER_TAG_FALLBACKS = {
+  sort_type: {
+    hot: { name: "综合", id: "general" },
+    latest: { name: "最新", id: "time_descending" },
+    "most-liked": { name: "最多点赞", id: "popularity_descending" },
+    "most-commented": { name: "最多评论", id: "comment_descending" },
+    "most-collected": { name: "最多收藏", id: "collect_descending" },
+  },
+  filter_note_type: {
+    all: { name: "不限", id: "不限" },
+    video: { name: "视频", id: "视频笔记" },
+    image: { name: "图文", id: "普通笔记" },
+  },
+  filter_note_time: {
+    all: { name: "不限", id: "不限" },
+    day: { name: "一天内", id: "一天内" },
+    week: { name: "一周内", id: "一周内" },
+    "half-year": { name: "半年内", id: "半年内" },
+  },
+  filter_note_range: {
+    all: { name: "不限", id: "不限" },
+  },
+  filter_pos_distance: {
+    all: { name: "不限", id: "不限" },
+  },
+};
+
+const findSearchFilterTag = (filterConfig, filterType, selectionKey) => {
+  const fallback = SEARCH_FILTER_TAG_FALLBACKS[filterType]?.[selectionKey];
+  const group = Array.isArray(filterConfig) ? filterConfig.find((item) => item?.id === filterType) : null;
+  const tags = Array.isArray(group?.filter_tags) ? group.filter_tags : [];
+  if (!tags.length) {
+    return fallback || null;
+  }
+
+  if (fallback?.id) {
+    const byId = tags.find((tag) => String(tag?.id || "") === String(fallback.id));
+    if (byId) return { name: byId.name || fallback.name, id: byId.id || fallback.id };
+  }
+
+  if (fallback?.name) {
+    const byName = tags.find((tag) => String(tag?.name || "") === String(fallback.name));
+    if (byName) return { name: byName.name || fallback.name, id: byName.id || fallback.id || fallback.name };
+  }
+
+  return fallback || null;
+};
+
+const buildSearchNotesFilters = ({ sortBy, noteType, publishWindow, filterConfig }) => {
+  const sortTag = findSearchFilterTag(filterConfig, "sort_type", sortBy) || SEARCH_FILTER_TAG_FALLBACKS.sort_type.hot;
+  const noteTypeTag =
+    findSearchFilterTag(filterConfig, "filter_note_type", noteType) || SEARCH_FILTER_TAG_FALLBACKS.filter_note_type.all;
+  const publishWindowTag =
+    findSearchFilterTag(filterConfig, "filter_note_time", publishWindow) ||
+    SEARCH_FILTER_TAG_FALLBACKS.filter_note_time.all;
+  const rangeTag = findSearchFilterTag(filterConfig, "filter_note_range", "all") || SEARCH_FILTER_TAG_FALLBACKS.filter_note_range.all;
+  const distanceTag =
+    findSearchFilterTag(filterConfig, "filter_pos_distance", "all") || SEARCH_FILTER_TAG_FALLBACKS.filter_pos_distance.all;
+
+  return {
+    sort: sortTag.id || SEARCH_SORT_ID_MAP.hot,
+    noteTypeValue: SEARCH_NOTE_TYPE_VALUE_MAP[noteType] ?? 0,
+    filters: [
+      { type: "sort_type", tags: [sortTag.id || sortTag.name] },
+      { type: "filter_note_type", tags: [noteTypeTag.id || noteTypeTag.name] },
+      { type: "filter_note_time", tags: [publishWindowTag.id || publishWindowTag.name] },
+      { type: "filter_note_range", tags: [rangeTag.id || rangeTag.name] },
+      { type: "filter_pos_distance", tags: [distanceTag.id || distanceTag.name] },
+    ],
+    selections: {
+      sort: sortTag,
+      noteType: noteTypeTag,
+      publishWindow: publishWindowTag,
+      range: rangeTag,
+      distance: distanceTag,
+    },
+  };
+};
+
+const SEARCH_SORT_LABEL_MAP = {
+  hot: "综合",
+  latest: "最新",
+  "most-liked": "最多点赞",
+  "most-commented": "最多评论",
+  "most-collected": "最多收藏",
+};
+
+const SEARCH_NOTE_TYPE_LABEL_MAP = {
+  all: "全部",
+  image: "图文",
+  video: "视频",
+};
+
+const SEARCH_PUBLISH_WINDOW_LABEL_MAP = {
+  all: "不限",
+  day: "一天内",
+  week: "一周内",
+  "half-year": "半年内",
+};
+
+const clickVisibleText = async (page, label) => {
+  if (!label) return { ok: false, reason: "missing-label" };
+
+  const result = await page.evaluate((textLabel) => {
+    const isVisible = (element) => {
+      if (!(element instanceof HTMLElement)) return false;
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 10 && rect.height > 10;
+    };
+
+    const nodes = Array.from(document.querySelectorAll("button, div, span")).filter((element) => {
+      const value = String(element.textContent || "").replace(/\s+/g, " ").trim();
+      return value === textLabel && isVisible(element);
+    });
+
+    if (!nodes.length) {
+      return { ok: false, count: 0 };
+    }
+
+    const node = nodes[0];
+    node.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+    return {
+      ok: true,
+      count: nodes.length,
+      tag: node.tagName,
+      className: String(node.className || ""),
+    };
+  }, label);
+
+  await delay(1200);
+  return result;
+};
+
+const applySearchUiFilters = async (page, { sortBy, noteType, publishWindow }) => {
+  const applied = {
+    noteTypeLabel: SEARCH_NOTE_TYPE_LABEL_MAP[noteType] || SEARCH_NOTE_TYPE_LABEL_MAP.all,
+    sortLabel: SEARCH_SORT_LABEL_MAP[sortBy] || SEARCH_SORT_LABEL_MAP.hot,
+    publishWindowLabel: SEARCH_PUBLISH_WINDOW_LABEL_MAP[publishWindow] || SEARCH_PUBLISH_WINDOW_LABEL_MAP.all,
+    steps: [],
+  };
+
+  if (noteType !== "all") {
+    applied.steps.push({
+      step: "note-type",
+      label: applied.noteTypeLabel,
+      result: await clickVisibleText(page, applied.noteTypeLabel),
+    });
+  }
+
+  const needsPanel = sortBy !== "hot" || publishWindow !== "all";
+  if (!needsPanel) {
+    return applied;
+  }
+
+  applied.steps.push({
+    step: "open-filter",
+    label: "筛选",
+    result: await clickVisibleText(page, "筛选"),
+  });
+
+  if (sortBy !== "hot") {
+    applied.steps.push({
+      step: "sort",
+      label: applied.sortLabel,
+      result: await clickVisibleText(page, applied.sortLabel),
+    });
+  }
+
+  if (publishWindow !== "all") {
+    applied.steps.push({
+      step: "publish-window",
+      label: applied.publishWindowLabel,
+      result: await clickVisibleText(page, applied.publishWindowLabel),
+    });
+  }
+
+  applied.steps.push({
+    step: "close-filter",
+    label: "收起",
+    result: await clickVisibleText(page, "收起"),
+  });
+
+  return applied;
 };
 
 const extractNoteIdFromUrl = (value) => {
@@ -279,6 +532,201 @@ const normalizeTimestampValue = (value) => {
   return null;
 };
 
+const isWithinPublishWindow = (publishTime, publishWindow) => {
+  if (!publishWindow || publishWindow === "all") return true;
+  const normalized = normalizeTimestampValue(publishTime);
+  if (!normalized) return true;
+  const timestamp = new Date(normalized).getTime();
+  if (Number.isNaN(timestamp)) return true;
+  const diffMs = Date.now() - timestamp;
+  if (publishWindow === "day") return diffMs <= 24 * 60 * 60 * 1000;
+  if (publishWindow === "week") return diffMs <= 7 * 24 * 60 * 60 * 1000;
+  if (publishWindow === "half-year") return diffMs <= 183 * 24 * 60 * 60 * 1000;
+  return true;
+};
+
+const inferContentType = (sample) =>
+  sample?.hasVideoMedia || (Array.isArray(sample.mediaVideoUrls) && sample.mediaVideoUrls.length) ? "video" : "image";
+
+const inferContentFormat = (sample) => {
+  const imageCount = Array.isArray(sample.mediaImageUrls) ? sample.mediaImageUrls.length : 0;
+  if (inferContentType(sample) === "video") return "video-note";
+  if (imageCount >= 2 && text(sample.contentText).length < 120) return "long-image-note";
+  if (imageCount >= 2) return "multi-image-note";
+  return "single-image-note";
+};
+
+const filterSamplesByNoteType = (samples, noteType) => {
+  if (!noteType || noteType === "all") return samples;
+  return samples.filter((sample) => inferContentType(sample) === noteType);
+};
+
+const filterSamplesByPublishWindow = (samples, publishWindow) =>
+  samples.filter((sample) => isWithinPublishWindow(sample.publishTime, publishWindow));
+
+const sortSamples = (samples, sortBy) => {
+  const next = [...samples];
+  const publishMs = (sample) => {
+    const normalized = normalizeTimestampValue(sample.publishTime);
+    return normalized ? new Date(normalized).getTime() : 0;
+  };
+
+  next.sort((left, right) => {
+    if (sortBy === "latest") {
+      return publishMs(right) - publishMs(left);
+    }
+    if (sortBy === "most-liked") {
+      return (right.likeCount || 0) - (left.likeCount || 0);
+    }
+    if (sortBy === "most-commented") {
+      return (right.commentCount || 0) - (left.commentCount || 0);
+    }
+    if (sortBy === "most-collected") {
+      return (right.collectCount || 0) - (left.collectCount || 0);
+    }
+    return (right.likeCount || 0) + (right.collectCount || 0) - ((left.likeCount || 0) + (left.collectCount || 0));
+  });
+
+  return next;
+};
+
+const cleanOcrText = (value) =>
+  String(value || "")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => text(line))
+    .filter(Boolean)
+    .filter((line, index, lines) => lines.indexOf(line) === index)
+    .join("\n");
+
+const ensureArtifactsDir = async () => {
+  await fs.mkdir(ARTIFACTS_DIR, { recursive: true });
+};
+
+const downloadFileToArtifacts = async (url, prefix) => {
+  if (!url || !/^https?:\/\//.test(url)) return null;
+  await ensureArtifactsDir();
+  const extMatch = String(url).match(/\.(png|jpe?g|webp)(?:\?|$)/i);
+  const ext = extMatch ? `.${extMatch[1].toLowerCase()}` : ".jpg";
+  const filePath = path.join(
+    ARTIFACTS_DIR,
+    `${sanitizeSegment(prefix)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`,
+  );
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        "user-agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+      },
+      signal: controller.signal,
+    });
+  } catch {
+    clearTimeout(timeoutId);
+    return null;
+  }
+  clearTimeout(timeoutId);
+  if (!response.ok) return null;
+  const buffer = Buffer.from(await response.arrayBuffer());
+  await fs.writeFile(filePath, buffer);
+  return filePath;
+};
+
+const runVisionOcr = async (filePaths = []) => {
+  const targets = filePaths.filter(Boolean);
+  if (!targets.length) return [];
+  try {
+    const result = await withTimeout(
+      execFileAsync("swift", [VISION_OCR_RUNNER, ...targets], {
+        maxBuffer: 20 * 1024 * 1024,
+      }),
+      12000,
+      null,
+    );
+    if (!result || typeof result !== "object" || !("stdout" in result)) return [];
+    const { stdout } = result;
+    const parsed = JSON.parse(stdout || "[]");
+    return Array.isArray(parsed)
+      ? parsed.map((item) => ({
+          path: String(item?.path || ""),
+          text: cleanOcrText(item?.text || ""),
+        }))
+      : [];
+  } catch {
+    return [];
+  }
+};
+
+const extractImageOcrTexts = async (imageUrls = [], prefix = "sample-image") => {
+  const targets = imageUrls.filter(Boolean).slice(0, 3);
+  const files = [];
+  try {
+    for (const [index, url] of targets.entries()) {
+      const filePath = await downloadFileToArtifacts(url, `${prefix}-${index + 1}`);
+      if (filePath) files.push(filePath);
+    }
+    const results = await runVisionOcr(files);
+    return results.map((item) => item.text).filter(Boolean);
+  } finally {
+    await Promise.all(files.map((filePath) => safeUnlink(filePath)));
+  }
+};
+
+const captureLocatorFrameOcr = async (page, selector, prefix) => {
+  const files = [];
+  try {
+    await ensureArtifactsDir();
+    const locator = page.locator(selector).first();
+    if ((await locator.count().catch(() => 0)) === 0) return [];
+    for (let index = 0; index < 2; index += 1) {
+      const filePath = path.join(
+        ARTIFACTS_DIR,
+        `${sanitizeSegment(prefix)}-frame-${index + 1}-${Date.now()}.png`,
+      );
+      await locator.screenshot({ path: filePath }).catch(() => {});
+      files.push(filePath);
+      await delay(900);
+    }
+    const results = await runVisionOcr(files);
+    return results.map((item) => item.text).filter(Boolean);
+  } finally {
+    await Promise.all(files.map((filePath) => safeUnlink(filePath)));
+  }
+};
+
+const finalizeResolvedContent = (sample) => {
+  const resolvedContentText =
+    text(sample.resolvedContentText) ||
+    text(sample.ocrTextClean) ||
+    text(sample.transcriptText) ||
+    text(sample.contentText) ||
+    text(sample.contentSummary);
+  const resolvedContentSource =
+    sample.resolvedContentSource ||
+    (text(sample.ocrTextClean)
+      ? "image-ocr"
+      : text(sample.transcriptText)
+        ? "video-frame-ocr"
+        : "note-body");
+  return {
+    ...sample,
+    hasVideoMedia: Boolean(sample.hasVideoMedia),
+    contentType: inferContentType(sample),
+    contentFormat: inferContentFormat(sample),
+    longImageCandidate: inferContentFormat(sample) === "long-image-note",
+    ocrTextRaw: sample.ocrTextRaw || "",
+    ocrTextClean: sample.ocrTextClean || "",
+    transcriptText: sample.transcriptText || "",
+    transcriptSegments: Array.isArray(sample.transcriptSegments) ? sample.transcriptSegments.filter(Boolean) : [],
+    frameOcrTexts: Array.isArray(sample.frameOcrTexts) ? sample.frameOcrTexts.filter(Boolean) : [],
+    resolvedContentText,
+    resolvedContentSource,
+  };
+};
+
 const summarizeJsonishBody = (value) => {
   const raw = String(value || "").trim();
   if (!raw) {
@@ -411,6 +859,10 @@ const extractSearchCards = async (page, keyword, targetCount) => {
           title,
           contentText: desc || `${title}，围绕 ${keyword} 展开，等待后续深入解析。`,
           contentSummary: desc || `${keyword} 搜索结果卡片内容摘要。`,
+          hasVideoMedia:
+            node.querySelector("video") !== null ||
+            /视频/.test(title) ||
+            /视频/.test(metricText),
           authorName: author,
           publishTime: publishText || "",
           likeCount,
@@ -504,6 +956,9 @@ const extractFromInitialState = async (page, keyword, targetCount) => {
         const values = Object.values(current);
         for (const item of values) queue.push(unwrap(item));
 
+        const modelType = text(current.model_type || current.modelType || current.type || "");
+        if (modelType && modelType !== "note") continue;
+
         const noteId =
           current.noteId ||
           current.id ||
@@ -570,6 +1025,21 @@ const extractFromInitialState = async (page, keyword, targetCount) => {
           title: text(title) || `${keyword} 热门内容`,
           contentText: text(content) || `${text(title)}，围绕 ${keyword} 展开。`,
           contentSummary: text(content) || `${keyword} 搜索结果摘要。`,
+          hasVideoMedia:
+            Boolean(current.video_info || current.videoInfo || current.video_info_v2 || current.videoInfoV2) ||
+            /video|视频/i.test(
+              [
+                current.noteCardType,
+                current.noteType,
+                current.note_type,
+                current.modelType,
+                current.model_type,
+                current.type,
+                title,
+              ]
+                .filter(Boolean)
+                .join(" "),
+            ),
           authorName: text(authorName),
           publishTime:
             current.publish_time ||
@@ -647,6 +1117,8 @@ const extractFromSearchState = async (page, keyword, targetCount) => {
       const seen = new Set();
       for (const current of feeds) {
         if (!current || typeof current !== "object") continue;
+        const modelType = text(current.model_type || current.modelType || current.type || "");
+        if (modelType && modelType !== "note") continue;
         const noteId =
           current.noteId ||
           current.id ||
@@ -692,6 +1164,32 @@ const extractFromSearchState = async (page, keyword, targetCount) => {
           title: title || `${keyword} 热门内容`,
           contentText: content || `${title}，围绕 ${keyword} 展开。`,
           contentSummary: content || `${keyword} 搜索结果摘要。`,
+          hasVideoMedia:
+            Boolean(
+              current.video_info ||
+                current.videoInfo ||
+                current.video_info_v2 ||
+                current.videoInfoV2 ||
+                current.noteCardType ||
+                current.noteType ||
+                current.note_type ||
+                current.modelType ||
+                current.model_type ||
+                current.type,
+            ) &&
+            /video|视频/i.test(
+              [
+                current.type,
+                current.noteCardType,
+                current.noteType,
+                current.note_type,
+                current.modelType,
+                current.model_type,
+                title,
+              ]
+                .filter(Boolean)
+                .join(" "),
+            ),
           authorName: text(user?.nickname || user?.name || user?.userName || current.nickname || current.authorName || "小红书用户"),
           publishTime:
             current.publish_time ||
@@ -813,6 +1311,8 @@ const extractFromNetworkPayloads = (payloads, keyword, targetCount) => {
     if (!current || typeof current !== "object") return null;
 
     const card = current.note_card || current.noteCard || current.card || current;
+    const modelType = text(current.model_type || current.modelType || card.model_type || card.modelType || current.type || "");
+    if (modelType && modelType !== "note") return null;
     const user = card.user || current.user || current.author || current.userInfo || {};
     const interaction = card.interact_info || card.interactInfo || current.interactInfo || current.interaction || current.metrics || {};
     const cover = card.cover || current.cover || {};
@@ -919,6 +1419,22 @@ const extractFromNetworkPayloads = (payloads, keyword, targetCount) => {
       interaction?.collected_count || interaction?.collectedCount || interaction?.collectCount || current.collects,
     );
     const shareCount = numberFromUnknown(interaction?.shared_count || interaction?.shareCount || current.shares);
+    const noteTypeHints = [
+      modelType,
+      card.type,
+      card.note_type,
+      card.noteType,
+      card.note_card_type,
+      card.noteCardType,
+      current.note_type,
+      current.noteType,
+      current.note_card_type,
+      current.noteCardType,
+      current.modelType,
+      title,
+    ]
+      .filter(Boolean)
+      .join(" ");
     const summary = buildSummary({
       title,
       content,
@@ -949,6 +1465,9 @@ const extractFromNetworkPayloads = (payloads, keyword, targetCount) => {
       coverImageUrl,
       mediaImageUrls: coverImageUrl ? [coverImageUrl] : [],
       mediaVideoUrls: [],
+      hasVideoMedia:
+        Boolean(card.video_info || card.videoInfo || card.video_info_v2 || card.videoInfoV2) ||
+        /video|视频/i.test(noteTypeHints),
     };
   };
 
@@ -1218,6 +1737,7 @@ const enrichSamplesFromNotePages = async (context, samples, keyword) => {
             resolvedNoteId,
             title,
             content: description,
+            hasVideoElement: document.querySelectorAll(".media-container video").length > 0,
             authorName: text(
               user.nick_name || user.nickname || user.name || user.userName || "",
             ),
@@ -1303,12 +1823,13 @@ const enrichSamplesFromNotePages = async (context, samples, keyword) => {
         continue;
       }
 
-      enriched.push({
-        ...sample,
-        contentText: detailContent,
-        contentSummary: summary.slice(0, 220),
-        tags: mergedTags.length ? mergedTags : sample.tags,
-        coverImageUrl: sample.coverImageUrl || detail.mediaImageUrls?.[0] || "",
+        enriched.push({
+          ...sample,
+          contentText: detailContent,
+          contentSummary: summary.slice(0, 220),
+          hasVideoMedia: sample.hasVideoMedia || detail.hasVideoElement,
+          tags: mergedTags.length ? mergedTags : sample.tags,
+          coverImageUrl: sample.coverImageUrl || detail.mediaImageUrls?.[0] || "",
         mediaImageUrls: unique([...(detail.mediaImageUrls || []), ...(sample.mediaImageUrls || [])]),
         mediaVideoUrls: unique([...(detail.mediaVideoUrls || []), ...(sample.mediaVideoUrls || [])]),
       });
@@ -1401,6 +1922,7 @@ const enrichSamplesFromSearchModal = async (page, samples, keyword) => {
       return {
         title,
         content,
+        hasVideoElement: document.querySelectorAll(".media-container video").length > 0,
         authorName,
         publishText,
         tags,
@@ -1423,9 +1945,18 @@ const enrichSamplesFromSearchModal = async (page, samples, keyword) => {
   let detailEnrichedCount = 0;
   let modalOpenCount = 0;
   let modalMissCount = 0;
+  const totalSamples = Math.max(1, samples.length);
 
-  for (const sample of samples) {
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = samples[index];
     const noteId = extractNoteIdFromUrl(sample.sourceUrl);
+    await writeProgress({
+      progress: Math.min(72, 40 + Math.round((index / totalSamples) * 28)),
+      stage: "opening-note-details",
+      message: `正在打开第 ${index + 1}/${totalSamples} 条`,
+      extractedCount: index,
+      totalCount: totalSamples,
+    });
     if (!noteId) {
       enriched.push(sample);
       modalMissCount += 1;
@@ -1433,8 +1964,9 @@ const enrichSamplesFromSearchModal = async (page, samples, keyword) => {
     }
 
     try {
+      await humanPause(450, 1100);
       await page.evaluate(() => window.scrollTo(0, 0));
-      await delay(500);
+      await humanPause(300, 700);
 
       const matchedSection = page.locator(
         `section.note-item:has(a[href*="/explore/${noteId}"]), section.note-item:has(a[href*="/discovery/item/${noteId}"])`,
@@ -1448,7 +1980,14 @@ const enrichSamplesFromSearchModal = async (page, samples, keyword) => {
 
       const clickable = matchedSection.first().locator("a.cover.mask.ld, a.title").first();
       await matchedSection.first().scrollIntoViewIfNeeded().catch(() => {});
-      await delay(250);
+      await humanPause(250, 650);
+      const box = await clickable.boundingBox().catch(() => null);
+      if (box) {
+        const targetX = box.x + Math.max(6, Math.min(box.width - 6, box.width * (0.3 + Math.random() * 0.4)));
+        const targetY = box.y + Math.max(6, Math.min(box.height - 6, box.height * (0.3 + Math.random() * 0.4)));
+        await page.mouse.move(targetX, targetY, { steps: 8 }).catch(() => {});
+        await humanPause(120, 260);
+      }
       await clickable.click({ force: true }).catch(async () => {
         await page.evaluate((expectedNoteId) => {
           const section = Array.from(document.querySelectorAll("section.note-item")).find((node) =>
@@ -1460,22 +1999,39 @@ const enrichSamplesFromSearchModal = async (page, samples, keyword) => {
         }, noteId);
       });
       await page.waitForSelector("#noteContainer, .note-container", { timeout: 8000 });
-      await delay(1200);
+      await humanPause(900, 1600);
       modalOpenCount += 1;
 
       const detail = await extractModalDetail(noteId);
+      const frameOcrTexts =
+        Array.isArray(detail.mediaVideoUrls) && detail.mediaVideoUrls.length
+          ? await captureLocatorFrameOcr(page, ".media-container, #noteContainer, .note-container", `video-${noteId}`)
+          : [];
       const sameTitle =
         !text(detail.title) ||
         text(detail.title).includes(text(sample.title)) ||
         text(sample.title).includes(text(detail.title));
       const content = text(detail.content);
+      const transcriptText = cleanOcrText(frameOcrTexts.join("\n"));
 
       if (!sameTitle || content.length < 20) {
-        enriched.push(sample);
+        enriched.push(
+          finalizeResolvedContent({
+            ...sample,
+            hasVideoMedia: sample.hasVideoMedia || detail.hasVideoElement,
+            frameOcrTexts,
+            transcriptText,
+            transcriptSegments: transcriptText ? transcriptText.split("\n").filter(Boolean) : [],
+            resolvedContentText: text(sample.contentText) || transcriptText || text(sample.contentSummary),
+            resolvedContentSource: transcriptText ? "video-frame-ocr" : "note-body",
+          }),
+        );
       } else {
         detailEnrichedCount += 1;
-        enriched.push({
+        enriched.push(
+          finalizeResolvedContent({
           ...sample,
+            hasVideoMedia: sample.hasVideoMedia || detail.hasVideoElement,
           contentText: content,
           contentSummary: content.slice(0, 220),
           authorName: text(detail.authorName) || sample.authorName,
@@ -1498,7 +2054,13 @@ const enrichSamplesFromSearchModal = async (page, samples, keyword) => {
           coverImageUrl: sample.coverImageUrl || detail.mediaImageUrls?.[0] || "",
           mediaImageUrls: unique([...(detail.mediaImageUrls || []), ...(sample.mediaImageUrls || [])]),
           mediaVideoUrls: unique([...(detail.mediaVideoUrls || []), ...(sample.mediaVideoUrls || [])]),
-        });
+            frameOcrTexts,
+            transcriptText,
+            transcriptSegments: transcriptText ? transcriptText.split("\n").filter(Boolean) : [],
+            resolvedContentText: content || transcriptText,
+            resolvedContentSource: content ? "note-body" : transcriptText ? "video-frame-ocr" : "note-body",
+          }),
+        );
       }
     } catch {
       enriched.push(sample);
@@ -1519,6 +2081,13 @@ const enrichSamplesFromSearchModal = async (page, samples, keyword) => {
           timeout: 3000,
         })
         .catch(() => {});
+      await writeProgress({
+        progress: Math.min(72, 40 + Math.round(((index + 1) / totalSamples) * 28)),
+        stage: "opening-note-details",
+        message: `已处理 ${index + 1}/${totalSamples} 条`,
+        extractedCount: index + 1,
+        totalCount: totalSamples,
+      });
     }
   }
 
@@ -1529,6 +2098,78 @@ const enrichSamplesFromSearchModal = async (page, samples, keyword) => {
       modalOpenCount,
       modalMissCount,
       detailEnrichedCount,
+    },
+  };
+};
+
+const enrichSamplesWithImageOcr = async (samples = []) => {
+  const enriched = [];
+  let longImageDetectedCount = 0;
+  let imageOcrCount = 0;
+  const totalSamples = Math.max(1, samples.length);
+
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = samples[index];
+    await writeProgress({
+      progress: Math.min(92, 74 + Math.round((index / totalSamples) * 16)),
+      stage: "running-image-ocr",
+      message: `正在检查 OCR ${index + 1}/${totalSamples} 条`,
+      extractedCount: index,
+      totalCount: totalSamples,
+    });
+    const draft = finalizeResolvedContent(sample);
+    const shouldOcr =
+      draft.contentType === "image" &&
+      Array.isArray(draft.mediaImageUrls) &&
+      draft.mediaImageUrls.length >= 1 &&
+      text(draft.contentText).length < 220;
+
+    if (!shouldOcr) {
+      enriched.push(draft);
+      continue;
+    }
+
+    longImageDetectedCount += 1;
+    const ocrTexts = await extractImageOcrTexts(draft.mediaImageUrls, draft.platformContentId || draft.title || "long-image");
+    const ocrTextRaw = ocrTexts.join("\n\n");
+    const ocrTextClean = cleanOcrText(ocrTextRaw);
+
+    if (!ocrTextClean) {
+      enriched.push({
+        ...draft,
+        longImageCandidate: true,
+        contentFormat: "long-image-note",
+      });
+      continue;
+    }
+
+    imageOcrCount += 1;
+    enriched.push(
+      finalizeResolvedContent({
+        ...draft,
+        contentFormat: "long-image-note",
+        longImageCandidate: true,
+        ocrTextRaw,
+        ocrTextClean,
+        resolvedContentText: ocrTextClean,
+        resolvedContentSource: "image-ocr",
+      }),
+    );
+    await writeProgress({
+      progress: Math.min(92, 74 + Math.round(((index + 1) / totalSamples) * 16)),
+      stage: "running-image-ocr",
+      message: `已完成 OCR ${index + 1}/${totalSamples} 条`,
+      extractedCount: index + 1,
+      totalCount: totalSamples,
+    });
+  }
+
+  return {
+    samples: enriched,
+    stats: {
+      attempted: true,
+      longImageDetectedCount,
+      imageOcrCount,
     },
   };
 };
@@ -2297,6 +2938,8 @@ const run = async () => {
   let browser;
   let page;
   const networkPayloads = [];
+  let searchFilterConfig = null;
+  let appliedSearchFilters = null;
   const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
 
   try {
@@ -2316,7 +2959,73 @@ const run = async () => {
       return;
     }
 
+    const keyword = String(payload.keyword || "").trim();
+    const sortBy = ["latest", "most-liked", "most-commented", "most-collected"].includes(payload.sortBy)
+      ? payload.sortBy
+      : "hot";
+    const noteType = ["image", "video"].includes(payload.noteType) ? payload.noteType : "all";
+    const publishWindow = ["day", "week", "half-year"].includes(payload.publishWindow) ? payload.publishWindow : "all";
+    const targetCount = Math.max(5, Math.min(50, Number(payload.targetCount || 10)));
+
     await context.addCookies(cookies);
+    const manualSearchRequestData =
+      payload.manualSearchRequestData && typeof payload.manualSearchRequestData === "object" && !Array.isArray(payload.manualSearchRequestData)
+        ? payload.manualSearchRequestData
+        : null;
+    const manualSearchPageUrl =
+      typeof payload.manualSearchPageUrl === "string" && payload.manualSearchPageUrl.includes("xiaohongshu.com")
+        ? payload.manualSearchPageUrl
+        : null;
+
+    await context.route("**/api/sns/web/v1/search/notes", async (route, request) => {
+      const rawPostData = request.postData();
+      if (!rawPostData) {
+        await route.continue();
+        return;
+      }
+
+      try {
+        const requestData = JSON.parse(rawPostData);
+        if (manualSearchRequestData) {
+          if (typeof manualSearchRequestData.keyword === "string" && manualSearchRequestData.keyword.trim()) {
+            requestData.keyword = manualSearchRequestData.keyword;
+          }
+          if (typeof manualSearchRequestData.sort === "string" && manualSearchRequestData.sort.trim()) {
+            requestData.sort = manualSearchRequestData.sort;
+          }
+          if (typeof manualSearchRequestData.note_type === "number") {
+            requestData.note_type = manualSearchRequestData.note_type;
+          }
+          if (Array.isArray(manualSearchRequestData.filters)) {
+            requestData.filters = manualSearchRequestData.filters;
+          }
+          appliedSearchFilters = {
+            source: "manual-search-request",
+            sort: requestData.sort ?? null,
+            noteType: requestData.note_type ?? null,
+            filters: Array.isArray(requestData.filters) ? requestData.filters : [],
+          };
+        } else {
+          const selection = buildSearchNotesFilters({
+            sortBy,
+            noteType,
+            publishWindow,
+            filterConfig: searchFilterConfig,
+          });
+
+          requestData.sort = selection.sort;
+          requestData.note_type = selection.noteTypeValue;
+          requestData.filters = selection.filters;
+          appliedSearchFilters = selection.selections;
+        }
+
+        await route.continue({
+          postData: JSON.stringify(requestData),
+        });
+      } catch {
+        await route.continue();
+      }
+    });
     page = await context.newPage();
     page.on("response", async (response) => {
       if (!isLikelySearchApiUrl(response.url())) return;
@@ -2326,6 +3035,9 @@ const run = async () => {
       if (!contentType.includes("application/json")) return;
       try {
         const json = await response.json();
+        if (response.url().includes("/api/sns/web/v1/search/filter")) {
+          searchFilterConfig = Array.isArray(json?.data?.filters) ? json.data.filters : null;
+        }
         networkPayloads.push({
           url: response.url(),
           status: response.status(),
@@ -2335,13 +3047,38 @@ const run = async () => {
         // ignore malformed or unreadable responses
       }
     });
-    const keyword = String(payload.keyword || "").trim();
-    const sortBy = payload.sortBy === "latest" ? "latest" : "hot";
-    const targetCount = Math.max(5, Math.min(50, Number(payload.targetCount || 10)));
-    const url = `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}&source=web_explore_feed`;
+    const url =
+      manualSearchPageUrl ||
+      `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}&source=web_explore_feed`;
 
+    await writeProgress({
+      progress: 8,
+      stage: "opening-search-page",
+      message: "正在打开小红书结果页",
+      extractedCount: 0,
+      totalCount: targetCount,
+    });
     await page.goto(url, { waitUntil: "networkidle", timeout: 45000 });
     await delay(2500);
+
+    await writeProgress({
+      progress: 18,
+      stage: "applying-filters",
+      message: "正在应用筛选条件",
+      extractedCount: 0,
+      totalCount: targetCount,
+    });
+    const uiFilterApplication = manualSearchRequestData
+      ? {
+          mode: "manual-search-request",
+          pageUrl: url,
+          steps: [],
+        }
+      : await applySearchUiFilters(page, {
+          sortBy,
+          noteType,
+          publishWindow,
+        });
 
     for (let i = 0; i < 4; i += 1) {
       await page.mouse.wheel(0, 1800);
@@ -2377,6 +3114,19 @@ const run = async () => {
     const searchStateSamples = await extractFromSearchState(page, keyword, targetCount);
     const stateSamples = await extractFromInitialState(page, keyword, targetCount);
     const domSamples = await extractSearchCards(page, keyword, targetCount);
+    await writeProgress({
+      progress: 34,
+      stage: "extracting-search-results",
+      message: "正在读取搜索结果列表",
+      extractedCount: Math.max(networkSamples.length, searchStateSamples.length, stateSamples.length, domSamples.length),
+      totalCount: targetCount,
+      metadata: {
+        networkCount: networkSamples.length,
+        searchStateCount: searchStateSamples.length,
+        initialStateCount: stateSamples.length,
+        domCount: domSamples.length,
+      },
+    });
     const initialSamples = networkSamples.length
       ? networkSamples
       : searchStateSamples.length
@@ -2404,14 +3154,102 @@ const run = async () => {
       return;
     }
 
-    const modalEnrichment = await enrichSamplesFromSearchModal(page, initialSamples, keyword);
-    const samples = await enrichSamplesFromNotePages(context, modalEnrichment.samples, keyword);
-    const detailApiProbe = await probeDetailApiCandidates(context, payload.cookieBlob, samples, keyword);
-    const detailEnrichedCount = samples.filter(
+    const modalEnrichment = await withTimeout(
+      enrichSamplesFromSearchModal(page, initialSamples, keyword),
+      45000,
+      {
+        samples: initialSamples,
+        stats: {
+          attempted: true,
+          timedOut: true,
+          reason: "modal-enrichment-timeout",
+          modalOpenCount: 0,
+          modalMissCount: initialSamples.length,
+          detailEnrichedCount: 0,
+        },
+      },
+    );
+    const notePageEnriched = await withTimeout(
+      enrichSamplesFromNotePages(context, modalEnrichment.samples, keyword),
+      30000,
+      modalEnrichment.samples,
+    );
+    await writeProgress({
+      progress: 76,
+      stage: "note-detail-enrichment",
+      message: "正在补充图文详情正文",
+      extractedCount: Math.min(notePageEnriched.length, targetCount),
+      totalCount: targetCount,
+    });
+    const imageOcrEnrichment = await withTimeout(
+      enrichSamplesWithImageOcr(notePageEnriched),
+      25000,
+      {
+        samples: notePageEnriched,
+        stats: {
+          attempted: true,
+          timedOut: true,
+          reason: "image-ocr-timeout",
+          longImageDetectedCount: 0,
+          imageOcrCount: 0,
+        },
+      },
+    );
+    const finalizedSamples = imageOcrEnrichment.samples.map((sample) => finalizeResolvedContent(sample));
+    const filteredSamples = sortSamples(
+      filterSamplesByPublishWindow(filterSamplesByNoteType(finalizedSamples, noteType), publishWindow),
+      sortBy,
+    ).slice(0, targetCount);
+    await writeProgress({
+      progress: 94,
+      stage: "finalizing-samples",
+      message: "正在整理最终样本",
+      extractedCount: filteredSamples.length,
+      totalCount: targetCount,
+    });
+
+    if (!filteredSamples.length) {
+      fail(
+        "Collector extracted raw Xiaohongshu samples but none matched the selected note type or publish window.",
+        "no-filtered-samples",
+        {
+          noteType,
+          publishWindow,
+          appliedSearchFilters,
+          uiFilterApplication,
+          diagnostics,
+          artifacts,
+          extractedFrom: networkSamples.length
+            ? "network"
+            : searchStateSamples.length
+              ? "search-state"
+              : stateSamples.length
+                ? "initial-state"
+                : "dom",
+        },
+      );
+      return;
+    }
+    const detailApiProbe = await withTimeout(
+      probeDetailApiCandidates(context, payload.cookieBlob, filteredSamples, keyword),
+      12000,
+      {
+        timedOut: true,
+        reason: "detail-api-probe-timeout",
+      },
+    );
+    const detailEnrichedCount = filteredSamples.filter(
       (item, index) =>
         normalizeText(item.contentText) !== normalizeText(initialSamples[index]?.contentText) ||
         JSON.stringify(item.tags || []) !== JSON.stringify(initialSamples[index]?.tags || []),
     ).length;
+    const contentTypeCounts = filteredSamples.reduce(
+      (accumulator, sample) => {
+        accumulator[sample.contentType] += 1;
+        return accumulator;
+      },
+      { image: 0, video: 0 },
+    );
 
     process.stdout.write(
       JSON.stringify({
@@ -2421,8 +3259,12 @@ const run = async () => {
         metadata: {
           provider: "xiaohongshu-playwright-worker",
           ready: true,
-          extractedCount: samples.length,
+          extractedCount: filteredSamples.length,
           sortBy,
+          noteType,
+          publishWindow,
+          appliedSearchFilters,
+          uiFilterApplication,
           extractedFrom: networkSamples.length
             ? "network"
             : searchStateSamples.length
@@ -2431,12 +3273,16 @@ const run = async () => {
                 ? "initial-state"
                 : "dom",
           modalEnrichment: modalEnrichment.stats,
+          imageOcr: imageOcrEnrichment.stats,
           detailEnrichedCount,
+          contentTypeCounts,
           detailApiProbe,
           diagnostics,
           artifacts,
+          progressStage: "completed",
+          progressMessage: "抓取完成",
         },
-        samples,
+        samples: filteredSamples,
       }),
     );
   } catch (error) {

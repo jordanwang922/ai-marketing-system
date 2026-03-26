@@ -1015,3 +1015,255 @@ The frontend now has a working login flow and local token persistence. The defau
   - verified responses:
     - `GET /api/virallab/health` -> `ok: true`
     - `POST /api/virallab/auth/login` with demo account -> success token returned
+- Collection-filter note:
+  - collection form now exposes three production-facing search controls:
+    - `排序依据`
+      - `热门`
+      - `最新`
+      - `最多点赞`
+      - `最多评论`
+      - `最多收藏`
+    - `笔记类型`
+      - `不限`
+      - `图文`
+      - `视频`
+    - `发布时间`
+      - `不限`
+      - `一天内`
+      - `一周内`
+      - `半年内`
+  - these values are now forwarded through:
+    - app collect form
+    - API create-job DTO
+    - collection job metadata
+    - Xiaohongshu worker payload
+- Xiaohongshu multimodal note:
+  - Xiaohongshu samples are no longer treated as one flat text type
+  - current sample shape now carries:
+    - `contentType`
+      - `image`
+      - `video`
+    - `contentFormat`
+      - `single-image-note`
+      - `multi-image-note`
+      - `long-image-note`
+      - `video-note`
+    - OCR / video enrichment fields:
+      - `ocrTextRaw`
+      - `ocrTextClean`
+      - `transcriptText`
+      - `transcriptSegments`
+      - `frameOcrTexts`
+      - `resolvedContentText`
+      - `resolvedContentSource`
+- OCR implementation note:
+  - V1 long-image OCR is now wired through a local macOS Vision helper:
+    - `modules/virallab/worker/src/vision-ocr.swift`
+  - worker behavior:
+    - download candidate long-image assets
+    - run Vision OCR locally
+    - clean the OCR output
+    - promote OCR text into `resolvedContentText`
+  - this is intended for Xiaohongshu long-image notes where page body text is weak but images contain the real payload
+- Video implementation note:
+  - the environment currently does not have:
+    - `ffmpeg`
+    - `whisper`
+    - `faster-whisper`
+  - so video V1 is intentionally implemented as:
+    - page/modal playback context
+    - frame screenshots
+    - Vision OCR on captured frames
+    - transcript placeholder derived from visible frame text
+  - this means:
+    - `frameOcrTexts` is live
+    - `transcriptText / transcriptSegments` are now populated from frame OCR when available
+    - true ASR is still a follow-up phase, not finished in this round
+- Analysis-chain note:
+  - OCR/video resolved text is now consumed downstream
+  - `SamplesService` quality scoring already prefers `resolvedContentText`
+  - `AnalyzeService` now prefers Prisma `parsedPayloadJson.resolvedContentText` over raw `contentText`
+  - implication:
+    - long-image OCR and video frame OCR now affect both:
+      - sample review quality
+      - later analysis inputs
+- Video-classification fix note:
+  - an important Xiaohongshu classification bug was identified from real usage:
+    - some obvious video posts were still showing up under `图文`
+    - UI could show `1 张图片 · 0 个视频` even for a video diary post
+  - root cause:
+    - previous video detection relied too heavily on `mediaVideoUrls.length`
+    - many Xiaohongshu videos expose a `video` element and poster image, but not a reusable direct video URL
+  - current fix:
+    - introduced `hasVideoMedia`
+    - content type inference now uses:
+      - DOM `video` presence
+      - state/network note type hints
+      - modal/detail page video element presence
+    - UI video count now falls back to `hasVideoMedia`
+  - implication:
+    - note type filtering and sample rendering should now be much closer to the user’s real expectation when selecting `图文` vs `视频`
+- Real filter-routing fix note:
+  - another deeper mismatch was confirmed from live Xiaohongshu testing:
+    - ViralLab form selections such as:
+      - `最多点赞`
+      - `图文`
+      - `一周内`
+    - did not previously guarantee the same result set as the real Xiaohongshu page
+  - root cause:
+    - the worker mostly relied on:
+      - default search page payloads
+      - then local sort/filter after extraction
+    - this is not equivalent to Xiaohongshu’s own search pipeline
+  - current fix:
+    - the worker now captures real search filter definitions from:
+      - `/api/sns/web/v1/search/filter`
+    - and intercepts browser-originated:
+      - `/api/sns/web/v1/search/notes`
+    - before the request is sent, it rewrites:
+      - `sort`
+      - `note_type`
+      - `filters`
+    - using Xiaohongshu’s own real filter ids/tags
+  - confirmed mappings from live traffic:
+    - `图文 -> note_type=2 / 普通笔记`
+    - `视频 -> note_type=1 / 视频笔记`
+    - `最多点赞 -> popularity_descending`
+    - `一周内 -> filter_note_time=一周内`
+  - implication:
+    - collection is now much closer to:
+      - “ask Xiaohongshu for the filtered result set”
+    - instead of:
+      - “pull default results and guess locally afterward”
+
+- Sample-review UX note:
+  - sample cards now surface:
+    - title
+    - author
+    - publish date (date-only)
+    - likes / comments / collects / shares
+    - Xiaohongshu search hint
+  - this was added to let operators verify a sample against the original Xiaohongshu post without manually parsing the raw URL first
+
+- Sample list scope note:
+  - the Samples panel now prioritizes samples from the latest collection job
+  - this reduces confusion between newly filtered results and older historical jobs
+  - numeric engagement counters are also formatted with thousands separators
+
+- UI-driven filter note:
+  - the Xiaohongshu worker now applies filters in two layers:
+    - primary: click the real page controls (`图文/视频`, `筛选`, `最多点赞`, `一周内`, etc.)
+    - secondary: keep request-body rewrite as a fallback alignment layer
+  - this was added to follow the product principle that the collector should match what the human user sees on the Xiaohongshu page as closely as possible
+
+- Scan-login note:
+  - a new user-facing login path is now available for the self-hosted Xiaohongshu collector
+  - instead of forcing users to manually copy cookies, the flow is now:
+    - fill collection filters first
+    - open Xiaohongshu scan window
+    - scan and complete login
+    - click `扫码完成并开始抓取`
+    - ViralLab captures cookies, verifies them, then automatically creates the current collection job
+  - new API endpoints:
+    - `POST /platform-accounts/xiaohongshu/scan-login/start`
+    - `POST /platform-accounts/xiaohongshu/scan-login/complete`
+    - `POST /platform-accounts/xiaohongshu/scan-login/cancel`
+  - implementation detail:
+    - API side dynamically loads Playwright from:
+      - `modules/virallab/worker/node_modules/playwright`
+    - this avoids introducing a second Playwright installation in the API package
+  - product implication:
+    - scan login is now the recommended path
+    - manual cookie paste remains available as a fallback only
+
+- Image vs video classification note:
+  - do not trust title length or body length as the primary classifier
+  - the collector now prioritizes Xiaohongshu search result raw fields:
+    - `model_type`
+    - `note_card.type`
+    - `video_info`
+    - `video_info_v2`
+  - noise items where `model_type !== note` are now filtered before mapping into samples
+  - this directly addresses earlier false positives caused by rec-query or weak heuristic classification
+
+- Current-task-only samples note:
+  - the `Samples` panel no longer falls back to old historical results when the newest job has no samples yet
+  - users now see only the latest run's samples, or an explicit empty-state message for that run
+
+- Real collector timeout note:
+  - the worker bridge now has a hard timeout via `VIRALLAB_REAL_COLLECTOR_TIMEOUT_MS`
+  - default is 120 seconds
+  - if the Xiaohongshu worker stalls in later enrichment stages, the job should fail explicitly instead of staying `running` indefinitely
+
+- Mode A note:
+  - the preferred Xiaohongshu flow is now:
+    - fill keyword
+    - open scan window
+    - manually finish filters inside Xiaohongshu
+    - return and click `扫码完成并开始抓取`
+  - scan completion now captures:
+    - the current result page URL
+    - the latest real `search/notes` request payload
+  - collection jobs can now carry:
+    - `manualSearchPageUrl`
+    - `manualSearchRequestData`
+  - when present, these become the source of truth for:
+    - sort
+    - note type
+    - publish window
+  - this is intended to reduce mismatch between what the user sees in Xiaohongshu and what ViralLab collects
+
+- Login outage note:
+  - a local outage occurred because `modules/virallab/api/data/virallab-mvp.json` became truncated/corrupted
+  - symptom:
+    - API health endpoint was unreachable
+    - login failed even with the correct demo password
+  - confirmed root cause:
+    - API startup depended on parsing the local JSON snapshot
+    - the JSON file was no longer valid
+  - current fix:
+    - API env loading now includes `modules/virallab/api/.env` even when started via `npm --prefix`
+    - the JSON snapshot has been rebuilt from the existing SQLite backup
+    - local API is currently configured with `VIRALLAB_ENABLE_DB_MIRROR=false` to avoid crashing on the older SQLite schema
+  - current known-good login:
+    - email: `demo@virallab.local`
+    - password: `demo123456`
+  - future cleanup still needed:
+    - either migrate `prisma/dev.db` up to the current schema
+    - or formally separate runtime JSON mode and Prisma mode instead of mixing them
+
+- Post-login 500 note:
+  - after the login outage was fixed, the UI could still show `{"statusCode":500,"message":"Internal server error"}`
+  - this was not an auth failure
+  - root cause:
+    - several local-mode list endpoints still sorted with `createdAt.localeCompare(...)`
+    - rebuilt local snapshot data contained numeric timestamps in some records
+  - affected endpoints included:
+    - `collect/jobs`
+    - `samples`
+    - `analyze/results`
+    - `patterns`
+    - `collect/debug-summary`
+  - current fix:
+    - local-mode sorting now uses timestamp-safe comparisons instead of assuming `createdAt` is always a string
+
+- 2026-03-27: Fixed scan window launch reliability. Root cause was scan login reusing the system Chrome session, which often only changed an existing tab and looked like “no response.” The flow now launches an isolated Playwright browser profile and activates `Google Chrome for Testing`, verified by direct API test returning a real Xiaohongshu search window.
+
+- 2026-03-27: Removed silent disable state from the scan-login button in the app. Clicking scan login now force-selects real collection + the Xiaohongshu Playwright provider and seeds a default keyword if empty, so users no longer click a seemingly active control that does nothing due to hidden state guards.
+
+- 2026-03-27: Reorganized the ViralLab landing workflow around the new scan-first flow. Removed the redundant “real collector status” card and demoted manual job creation into an advanced section. The main flow is now: platform access -> scan and start collection -> review collection status -> review samples -> analyze/generate. Added a dedicated task-status card so users know to wait for the job state instead of wondering what to do after clicking scan complete.
+
+- 2026-03-27: Fixed the “Scan Complete & Start Collection” flow. Root cause was the API running with VIRALLAB_ENABLE_REAL_COLLECTOR=false, so scan completion returned an immediate collector-disabled failure that users could not see clearly. Also simplified scan completion so it only captures cookies and the current Xiaohongshu result-page state, instead of trying to synchronously verify the collector. The UI now shows workspace status inline in the scan card, and the scan window is kept open until a collection job is actually created.
+
+- 2026-03-27: Fixed a worker bridge path bug for the real Xiaohongshu collector. The API had resolved the worker runner from process.cwd(), which pointed to /Users/jordanwang/YOLO/worker/... when the app was launched from the repo root, so scan completion never created a collection job. The runner path now resolves relative to the collector file itself, pointing correctly to modules/virallab/worker/src/run-xiaohongshu-collector.js.
+
+- 2026-03-27: The scan-first collection flow now has a dedicated runtime stage model in the UI. The app tracks the current collection job id created from scan completion, so step 2 follows this run only and no longer silently falls back to whichever historical job is first in the list.
+
+- 2026-03-27: Xiaohongshu Playwright collection now reports live worker progress back into the collection job record. Progress metadata includes:
+  - `progressStage`
+  - `progressMessage`
+  - `extractedCount`
+  - `targetCount`
+  This supports a visible progress bar and stage strip in the scan-first workflow.
+
+- 2026-03-27: Image OCR is no longer limited to posts with 2+ images. Weak-body image notes with even a single image now enter OCR, because real Xiaohongshu图文 often stores most of the正文 inside one cover/long image. This is an important quality fix for sample body extraction.

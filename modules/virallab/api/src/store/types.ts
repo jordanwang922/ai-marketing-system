@@ -36,7 +36,9 @@ export type ViralLabCollectionJob = {
   userId: string;
   platform: "xiaohongshu";
   keyword: string;
-  sortBy: "hot" | "latest";
+  sortBy: "hot" | "latest" | "most-liked" | "most-commented" | "most-collected";
+  noteType: "all" | "image" | "video";
+  publishWindow: "all" | "day" | "week" | "half-year";
   collectorMode: "mock" | "real";
   targetCount: number;
   status: "pending" | "running" | "completed" | "failed";
@@ -60,6 +62,9 @@ export type ViralLabSample = {
   title: string;
   contentText: string;
   contentSummary: string;
+  contentType: "image" | "video";
+  contentFormat: "single-image-note" | "multi-image-note" | "long-image-note" | "video-note";
+  longImageCandidate: boolean;
   authorName: string;
   authorId: string;
   publishTime: string;
@@ -72,6 +77,14 @@ export type ViralLabSample = {
   coverImageUrl: string;
   mediaImageUrls: string[];
   mediaVideoUrls: string[];
+  hasVideoMedia: boolean;
+  ocrTextRaw: string;
+  ocrTextClean: string;
+  transcriptText: string;
+  transcriptSegments: string[];
+  frameOcrTexts: string[];
+  resolvedContentText: string;
+  resolvedContentSource: "note-body" | "image-ocr" | "video-frame-ocr" | "merged";
   status: "active";
   createdAt: string;
   updatedAt: string;

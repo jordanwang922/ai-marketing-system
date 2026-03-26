@@ -426,6 +426,174 @@
 - `modules/virallab/api` build 通过
 - `modules/virallab/app` build 通过
 
+### 第六十一轮增强：修正小红书真实筛选逻辑，改为接管页面 `search/notes` 请求参数
+- 这轮针对真实用户反馈做了专项排查：
+  - 用户在 ViralLab 里选择：
+    - `最多点赞`
+    - `图文`
+    - `一周内`
+  - 但抓回来的结果仍然混入明显视频笔记，且顺序与小红书页面不一致
+- 排查结论已经确认：
+  - 旧逻辑主要是：
+    - 用默认搜索页结果采样
+    - 再在本地做 `sort/filter`
+  - 这会导致两类偏差：
+    - 结果顺序不等于小红书真实筛选顺序
+    - `图文/视频` 只要分类信号不稳，就会混入错误样本
+- 本轮修复：
+  - 在 worker 中监听真实的：
+    - `/api/sns/web/v1/search/filter`
+    - `/api/sns/web/v1/search/notes`
+  - 接管浏览器本来就会发出的 `search/notes` 请求
+  - 在放行前，把请求体重写成用户选择对应的真实筛选值：
+    - 排序依据 `sort_type`
+    - 笔记类型 `filter_note_type`
+    - 发布时间 `filter_note_time`
+    - 同时同步 `note_type`
+  - 目前已经确认的真实映射包括：
+    - `最多点赞 -> popularity_descending`
+    - `图文 -> note_type=2 / 普通笔记`
+    - `视频 -> note_type=1 / 视频笔记`
+    - `一周内 -> filter_note_time=一周内`
+- 这意味着当前自研 collector 已从：
+  - `先抓原始结果，再本地猜排序/过滤`
+  调整为：
+  - `先让小红书真实搜索接口按目标筛选返回，再进入后续详情补全/OCR链`
+
+### 本轮验证
+- `node --check modules/virallab/worker/src/run-xiaohongshu-collector.js` 通过
+- `modules/virallab/api` build 通过
+- `modules/virallab/app` build 通过
+- 用当前有效 cookie 做真实页面验证时，重写 `search/notes` 请求后，页面结果已经明显切换为：
+  - 图文结果流
+  - 且发布时间收窄到最近一周
+
+### 第八十轮增强：为小红书采集新增图文/视频筛选，并补齐多模态样本结构
+- 按新的设计文档先补齐了采集任务参数：
+  - `排序依据` 扩展为：
+    - `热门`
+    - `最新`
+    - `最多点赞`
+    - `最多评论`
+    - `最多收藏`
+  - 新增：
+    - `笔记类型`
+      - `不限`
+      - `图文`
+      - `视频`
+    - `发布时间`
+      - `不限`
+      - `一天内`
+      - `一周内`
+      - `半年内`
+- 前端 `collectForm` 与后端 `CreateCollectJobDto / CollectRequest` 已全部打通
+- Collection job metadata 已开始正式记录：
+  - `sortBy`
+  - `noteType`
+  - `publishWindow`
+- 小红书 worker 现在会在最终结果里执行：
+  - `图文 / 视频` 分流
+  - 发布时间窗口过滤
+  - 本地排序重排
+- 同时补齐了样本多模态字段：
+  - `contentType`
+  - `contentFormat`
+  - `longImageCandidate`
+  - `ocrTextRaw / ocrTextClean`
+  - `transcriptText / transcriptSegments`
+  - `frameOcrTexts`
+  - `resolvedContentText / resolvedContentSource`
+
+### 第八十一轮增强：接入本机 Vision OCR，先打通长图文 OCR 链
+- 新增 worker helper：
+  - `modules/virallab/worker/src/vision-ocr.swift`
+- 当前方案不是依赖外部 OCR 服务，而是直接调用 macOS Vision 框架
+- worker 已新增：
+  - 下载长图图片到 artifacts 临时目录
+  - 调用 Vision OCR
+  - 清洗 OCR 文本
+  - 回填：
+    - `ocrTextRaw`
+    - `ocrTextClean`
+    - `resolvedContentText`
+    - `resolvedContentSource=image-ocr`
+- 目前长图触发条件是：
+  - 图文
+  - 图片数量 >= 2
+  - 页面正文较短
+- 这条链的目标是优先解决“小红书长图文正文在图片里，页面正文很短”这一类问题
+
+### 第八十二轮增强：为视频链补上页面帧 OCR，并预留 transcript 字段
+- 受当前本机环境限制：
+  - 没有现成 `ffmpeg`
+  - 没有现成 `whisper / faster-whisper`
+- 所以视频 V1 先走“可运行版”：
+  - 搜索页/弹层打开视频
+  - 截取媒体区域帧图
+  - 用 Vision OCR 识别画面上的字幕/封面文字
+  - 回填：
+    - `frameOcrTexts`
+    - `transcriptText`
+    - `transcriptSegments`
+    - `resolvedContentSource=video-frame-ocr`
+- 这条链不是最终 ASR 版本，但已经把：
+  - 视频元数据
+  - 页面帧 OCR 文本
+  - 后续 Analyze 可消费的 resolved text
+  接进了统一样本结构
+
+### 第八十三轮增强：让后续分析真正吃到 OCR/视频融合后的正文
+- `SamplesService` 现在计算质量分时，已经优先使用：
+  - `resolvedContentText`
+  而不是只看原始 `contentText`
+- `AnalyzeService` 从 Prisma 读取 sample 时，也开始优先消费：
+  - `parsedPayloadJson.resolvedContentText`
+- 这意味着长图 OCR 和视频帧 OCR 不只是“展示字段”，而是已经进入后续分析链
+
+### 本轮验证
+- `node --check modules/virallab/worker/src/run-xiaohongshu-collector.js` 通过
+- `swift modules/virallab/worker/src/vision-ocr.swift` 通过
+- `modules/virallab/api` build 通过
+- `modules/virallab/app` build 通过
+
+### 当前限制
+- 视频 V1 目前先走：
+  - 页面帧 OCR
+  - 页面已有字幕/文案融合
+- 还没有接真正的：
+  - `Whisper / ASR`
+  - 音频流提取
+- 小红书搜索页的真实“筛选参数”目前以本地过滤和本地排序为主；后续如果找到更稳定的搜索 query 参数，再进一步下沉到请求层
+
+### 第八十四轮修复：修正“视频被误判成图文”的分类逻辑
+- 用户实测发现：
+  - 在采集表单里明确选择 `图文`
+  - 结果里仍然出现标题明显是“视频日记”的样本
+  - UI 还显示成：
+    - `1 张图片`
+    - `0 个视频`
+- 问题根因已确认：
+  - 之前的 `video/image` 判定主要依赖 `mediaVideoUrls.length > 0`
+  - 但小红书很多视频页只有：
+    - `video` DOM 元素
+    - `poster`
+  - 并没有可复用的视频直链，因此会被误判成图文
+- 本轮修复内容：
+  - 新增 `hasVideoMedia` 信号
+  - 视频判定不再只看 `mediaVideoUrls`
+  - 现在会综合：
+    - 搜索卡片 DOM 中是否出现 `video`
+    - 网络/state 里的 noteType / noteCardType / modelType
+    - 弹层和详情页里是否存在 `video` 元素
+  - UI 里的视频数量展示也已改为：
+    - `mediaVideoUrls.length || (hasVideoMedia ? 1 : 0)`
+  - `SamplesService` 和 `AnalyzeService` 的 `contentType/contentFormat` 推断也同步使用 `hasVideoMedia`
+
+### 本轮验证
+- `node --check modules/virallab/worker/src/run-xiaohongshu-collector.js` 通过
+- `modules/virallab/api` build 通过
+- `modules/virallab/app` build 通过
+
 ### 第八十一轮增强：补充中文使用手册与 Cookie 指引
 - 新增中文使用手册：
   - `docs/virallab_user_guide_zh.md`
@@ -2284,6 +2452,58 @@
 - `modules/virallab/api` build 通过
 - `modules/virallab/app` build 通过
 - `node --check modules/virallab/worker/src/run-xiaohongshu-collector.js` 通过
+
+## 2026-03-27 登录故障修复：API 启动依赖的本地 JSON 快照损坏
+
+### 本轮问题定位
+- 用户反馈 `demo@virallab.local / demo123456` 无法登录
+- 实际排查结果：
+  - `http://127.0.0.1:3301/api/virallab/health` 无响应
+  - `modules/virallab/api/data/virallab-mvp.json` 已损坏并被截断，`JSON.parse` 失败
+  - SQLite 备份库 `modules/virallab/api/prisma/dev.db` 仍然完整，demo 用户仍存在
+  - `npm run virallab:api` 通过 `--prefix` 启动时，原有 `process.cwd()` 逻辑拿不到 `modules/virallab/api/.env`
+
+### 本轮修复
+- 更新 `modules/virallab/api/src/main.ts`
+  - 环境加载新增 `__dirname/../.env` 候选
+  - 避免用 `--prefix` 启动时读不到 API 自己的环境文件
+- 更新 `modules/virallab/api/src/store/store.service.ts`
+  - 为损坏快照增加从持久层恢复的兜底逻辑
+- 新增 `modules/virallab/api/.env`
+  - 明确本地端口与 JWT 配置
+  - 当前将 `VIRALLAB_ENABLE_DB_MIRROR=false`
+  - 先绕开旧 SQLite schema 与新 Prisma schema 不一致的问题，优先恢复登录可用性
+- 使用现有 SQLite 数据重建：
+  - `modules/virallab/api/data/virallab-mvp.json`
+
+### 本轮验证
+- API 重新启动成功
+- `GET /api/virallab/health` 返回 `{\"ok\":true}`
+- `POST /api/virallab/auth/login`
+  - `demo@virallab.local / demo123456` 返回 `201`
+  - 登录成功并返回 token
+
+### 后续补充修复
+- 登录成功后首页仍显示 `500`
+- 进一步定位发现：
+  - 登录后前端会立即拉取 `collect/jobs`、`samples`、`analyze/results`、`patterns`、`collect/debug-summary`
+  - 多个列表接口仍在对 `createdAt` 调用 `localeCompare`
+  - 当前恢复出来的本地数据里，部分时间值是数字时间戳，不是字符串
+- 本轮已统一修复：
+  - `samples.service.ts`
+  - `patterns.service.ts`
+  - `analyze.service.ts`
+  - `collect.service.ts`
+  - `workflow.service.ts`
+  - 将本地模式下的排序改成统一的时间戳比较函数
+
+### 补充验证
+- 登录后继续实测以下接口均返回 `200`
+  - `GET /api/virallab/collect/jobs`
+  - `GET /api/virallab/samples`
+  - `GET /api/virallab/analyze/results`
+  - `GET /api/virallab/patterns`
+  - `GET /api/virallab/collect/debug-summary`
 - 用当前真实登录态再次执行 real worker collect 后，首条样本结果已确认：
   - `platformContentId = 69a6883a000000001a02b3e0`
   - `authorId = 642e876e000000001201368a`
@@ -2550,3 +2770,117 @@
 ### 本轮验证
 - `modules/virallab/api` build 通过
 - `modules/virallab/app` build 通过
+
+### 第六十二轮增强：补齐样本审核元信息展示
+- 前端样本卡片现已直接展示：
+  - 标题
+  - 作者
+  - 发布日期（仅年月日）
+  - 点赞 / 评论 / 收藏 / 转发
+  - 小红书回查提示（优先搜标题前半段 + 作者）
+- 目的：
+  - 让用户能直接核对 ViralLab 结果与小红书原帖
+  - 降低“抓出来的到底是哪条”的认知成本
+
+### 第六十三轮增强：样本区默认收敛到当前任务
+- Samples 面板现默认优先展示当前最新采集任务的样本
+- 若当前任务没有样本，再回退到全局最新样本
+- 同时补上：
+  - 点赞/评论/收藏/转发 千分位显示
+  - 类型兜底判定（contentType 缺失时，结合 hasVideoMedia / contentFormat / 标题信号推断）
+
+### 第六十四轮增强：接入真实页面筛选点击链
+- worker 现已新增 UI click path：
+  - 顶部 tab：`全部 / 图文 / 视频`
+  - 右上筛选：`综合 / 最新 / 最多点赞 / 最多评论 / 最多收藏`
+  - 发布时间：`不限 / 一天内 / 一周内 / 半年内`
+- 运行策略：
+  - 先点真实页面筛选
+  - 再继续抓当前页面结果与详情
+  - 请求改写逻辑保留为兜底和对齐层
+
+### 第六十五轮增强：补上扫码登录并自动接管 Cookie 的主流程
+- 为了让真实采集更符合普通用户操作习惯，这轮新增了“小红书扫码登录 -> 自动接管 Cookie -> 自动开始抓取”链路
+- 后端新增接口：
+  - `POST /platform-accounts/xiaohongshu/scan-login/start`
+  - `POST /platform-accounts/xiaohongshu/scan-login/complete`
+  - `POST /platform-accounts/xiaohongshu/scan-login/cancel`
+- API 侧会通过 worker 目录下的 Playwright 依赖打开一个新的小红书扫码窗口
+- 用户扫码完成后，系统会自动：
+  - 读取浏览器 Cookie
+  - 保存当前平台账号 Cookie
+  - 调用现有验证逻辑
+  - 再由前端自动继续发起本次采集任务
+- 前端主流程也同步改成：
+  - 第 1 步显示“推荐方式：扫码自动接管”
+  - 手动 Cookie 改成备用折叠入口
+  - 第 2 步在真实采集场景下，强调“优先使用扫码窗口”
+
+### 本轮验证
+- `modules/virallab/api` build 通过
+- `modules/virallab/app` build 通过
+- API 侧已确认可从：
+  - `modules/virallab/worker/node_modules/playwright`
+  正常加载 Playwright 运行时
+
+## 2026-03-26 继续收敛小红书图文/视频判断与当前任务样本显示
+
+### 本轮完成
+- 不再主要依赖标题和正文长度去猜图文/视频，开始把小红书搜索结果原始字段作为主判断来源：
+  - 过滤掉 `model_type !== note` 的噪音项
+  - 将 `note_card.type`、`video_info`、`video_info_v2`、`model_type` 纳入 `hasVideoMedia` 主判断
+- 修正样本页显示逻辑：
+  - 样本区默认只显示当前最新采集任务的样本
+  - 当前任务没有样本时，不再回退混入旧任务历史结果
+- 修正样本卡片：
+  - 类型显示改成更明确的 `图文 / 视频 + 内容形态`
+  - 当前任务无样本时直接给出中文提示
+- 给真实采集 bridge 增加硬超时：
+  - `VIRALLAB_REAL_COLLECTOR_TIMEOUT_MS`，默认 120 秒
+  - 避免任务长时间卡在 `running`
+
+### 本轮验证
+- 直接复查小红书真实 `search/notes` 返回：
+  - 在 `AI教育 + 图文 + 最多点赞 + 一周内` 条件下，前 10 条原始返回项大多数为：
+    - `model_type = note`
+    - `note_card.type = normal`
+    - `video_info = false`
+    - `image_list` 为多图
+- `node --check modules/virallab/worker/src/run-xiaohongshu-collector.js` 通过
+- `modules/virallab/api` build 通过
+- `modules/virallab/app` build 通过
+
+## 2026-03-26 模式 A：用户手动筛选后，系统接管当前结果页
+
+### 本轮完成
+- 扫码登录流程进一步升级为模式 A：
+  - 用户在小红书窗口里手动完成图文/视频、排序、发布时间筛选
+  - 系统不再把本地表单筛选当作唯一事实来源
+- 扫码窗口现在会监听真实的 `search/notes` 请求，并在完成时回传：
+  - `manualSearchPageUrl`
+  - `manualSearchRequestData`
+- 创建任务时，如果存在这组手动筛选数据：
+  - 优先从真实请求里反推出 `sortBy / noteType / publishWindow`
+  - worker 继续抓取时优先使用这组真实请求参数
+- 前端扫码说明已同步改成“在小红书里亲手筛好，再回来点击完成”
+
+### 本轮验证
+- `modules/virallab/api` build 通过
+- `modules/virallab/app` build 通过
+- `node --check modules/virallab/worker/src/run-xiaohongshu-collector.js` 通过
+
+- 2026-03-27: Fixed scan window launch reliability. Root cause was scan login reusing the system Chrome session, which often only changed an existing tab and looked like “no response.” The flow now launches an isolated Playwright browser profile and activates `Google Chrome for Testing`, verified by direct API test returning a real Xiaohongshu search window.
+
+- 2026-03-27: Removed silent disable state from the scan-login button in the app. Clicking scan login now force-selects real collection + the Xiaohongshu Playwright provider and seeds a default keyword if empty, so users no longer click a seemingly active control that does nothing due to hidden state guards.
+
+- 2026-03-27: Reorganized the ViralLab landing workflow around the new scan-first flow. Removed the redundant “real collector status” card and demoted manual job creation into an advanced section. The main flow is now: platform access -> scan and start collection -> review collection status -> review samples -> analyze/generate. Added a dedicated task-status card so users know to wait for the job state instead of wondering what to do after clicking scan complete.
+
+- 2026-03-27: Fixed the “Scan Complete & Start Collection” flow. Root cause was the API running with VIRALLAB_ENABLE_REAL_COLLECTOR=false, so scan completion returned an immediate collector-disabled failure that users could not see clearly. Also simplified scan completion so it only captures cookies and the current Xiaohongshu result-page state, instead of trying to synchronously verify the collector. The UI now shows workspace status inline in the scan card, and the scan window is kept open until a collection job is actually created.
+
+- 2026-03-27: Fixed a worker bridge path bug for the real Xiaohongshu collector. The API had resolved the worker runner from process.cwd(), which pointed to /Users/jordanwang/YOLO/worker/... when the app was launched from the repo root, so scan completion never created a collection job. The runner path now resolves relative to the collector file itself, pointing correctly to modules/virallab/worker/src/run-xiaohongshu-collector.js.
+
+- 2026-03-27: Added a real scan-to-collection stage model in the ViralLab app. The collection step now tracks the current run instead of loosely following the latest historical job, and the UI exposes a step strip plus a progress bar for: scan complete -> capture login state -> create job -> collect -> done/failed. This reduces the “clicked but nothing happened” confusion after scan completion.
+
+- 2026-03-27: Added worker-backed progress reporting for the Xiaohongshu Playwright collector. The worker now writes stage/progress updates to a temporary progress file, the collector bridge polls that file, and `CollectService` writes live progress metadata (`progressStage`, `progressMessage`, `extractedCount`, `targetCount`) back into the active collection job while it is still running.
+
+- 2026-03-27: Expanded image OCR triggering from multi-image posts to any weak-body image note with at least one image. This specifically addresses the case where Xiaohongshu图文正文 is mostly embedded in a single cover/long image and the old rule (`>= 2` images) skipped OCR entirely, leaving only search-card summaries in the sample list.
