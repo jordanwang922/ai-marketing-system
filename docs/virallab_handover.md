@@ -964,3 +964,54 @@ The frontend now has a working login flow and local token persistence. The defau
     - brand/title on the left
     - nav in the middle
     - user, locale switch, and logout on the right
+- User guidance note:
+  - added a dedicated Chinese user guide:
+    - `docs/virallab_user_guide_zh.md`
+  - this guide now documents:
+    - how to log in
+    - how to capture a valid Xiaohongshu cookie from the browser
+    - how to save and verify the cookie in ViralLab
+    - what to do when the cookie expires
+    - where to review collection outcomes:
+      - `Collection Jobs`
+      - `Samples`
+- In-app help note:
+  - the logged-in header now exposes two direct help entries:
+    - `使用说明`
+    - `Cookie 指引`
+  - both open an in-app modal instead of sending users to an external document first
+  - this is now the primary end-user guidance surface for:
+    - system usage flow
+    - cookie capture steps
+    - cookie recovery after expiration
+    - where collection results should be reviewed
+  - the cookie capture section has since been expanded with more explicit user-facing steps:
+    - click `Network`
+    - trigger or refresh requests
+    - filter by `xiaohongshu` or `edith`
+    - inspect `Headers -> Request Headers -> cookie`
+- Collection UX note:
+  - the collection panel now includes a dedicated next-step guidance card directly below the create-job form
+  - this card changes based on the latest collection job state:
+    - queued/running
+    - completed
+    - failed
+  - the goal is to make it obvious what the user should do immediately after clicking `创建任务`
+- Layout restructuring note:
+  - the main logged-in workspace has been restructured into a single vertical flow instead of the old multi-column reading order
+  - primary order is now:
+    1. platform access
+    2. collection
+    3. samples
+    4. analysis/pattern
+    5. draft generation
+  - secondary and advanced diagnostics have been demoted into a later collapsible block so the main path is easier for end users to follow
+- Latest verification note:
+  - post-refactor checks completed successfully for the current state:
+    - frontend build
+    - API build
+    - health endpoint
+    - demo login endpoint
+  - verified responses:
+    - `GET /api/virallab/health` -> `ok: true`
+    - `POST /api/virallab/auth/login` with demo account -> success token returned

@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { StatCard } from "./components/StatCard";
 
 type Locale = "zh" | "en";
+type HelpTab = "manual" | "cookie";
 
 type OverviewStat = {
   label: string;
@@ -311,26 +311,6 @@ const formatWorkflowVerdict = (verdict: "strong" | "usable" | "review" | null | 
   return map[verdict][locale];
 };
 
-const formatOverviewLabel = (label: string, locale: Locale) => {
-  const map: Record<string, { zh: string; en: string }> = {
-    "Collection Jobs": { zh: "采集任务", en: "Collection Jobs" },
-    Samples: { zh: "样本", en: "Samples" },
-    Patterns: { zh: "Patterns", en: "Patterns" },
-    "Generated Drafts": { zh: "生成草稿", en: "Generated Drafts" },
-  };
-  return map[label]?.[locale] || label;
-};
-
-const formatOverviewNote = (note: string, locale: Locale) => {
-  const map: Record<string, { zh: string; en: string }> = {
-    running: { zh: "运行中", en: "running" },
-    xiaohongshu: { zh: "小红书", en: "xiaohongshu" },
-    "pattern library": { zh: "模式库", en: "pattern library" },
-    "mvp drafts": { zh: "MVP 草稿", en: "mvp drafts" },
-  };
-  return map[note]?.[locale] || note;
-};
-
 const translateKnownUiText = (value: string | null | undefined, locale: Locale) => {
   if (!value) return "--";
   const map: Record<string, { zh: string; en: string }> = {
@@ -394,22 +374,29 @@ export default function App() {
     accountName: "Jordan Xiaohongshu",
     cookieBlob: "",
   });
+  const [helpTab, setHelpTab] = useState<HelpTab | null>(null);
   const t = (zh: string, en: string) => (locale === "zh" ? zh : en);
 
   useEffect(() => {
     localStorage.setItem(LOCALE_KEY, locale);
   }, [locale]);
 
+  useEffect(() => {
+    if (!helpTab) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setHelpTab(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [helpTab]);
+
   const selectedSampleIds = useMemo(() => samples.slice(0, 5).map((item) => item.id), [samples]);
   const visibleSamples = useMemo(() => samples.slice(0, 10), [samples]);
   const selectedAnalysisIds = useMemo(() => analyses.slice(0, 4).map((item) => item.id), [analyses]);
-  const providerSampleStats = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const sample of samples) {
-      counts.set(sample.provider, (counts.get(sample.provider) || 0) + 1);
-    }
-    return Array.from(counts.entries());
-  }, [samples]);
   const sampleQualityStats = useMemo(() => {
     if (!samples.length) return null;
     const flagCounts = new Map<string, number>();
@@ -442,34 +429,60 @@ export default function App() {
       topFlags,
     };
   }, [samples]);
-  const providerJobStats = useMemo(() => {
-    const stats = new Map<
-      string,
-      {
-        jobs: number;
-        normalizedItemCount: number;
-        fallbackItemCount: number;
-        fallbackUsedCount: number;
-      }
-    >();
-
-    for (const job of jobs) {
-      const provider = job.metadata?.provider || "unknown";
-      const current = stats.get(provider) || {
-        jobs: 0,
-        normalizedItemCount: 0,
-        fallbackItemCount: 0,
-        fallbackUsedCount: 0,
+  const latestCollectionJob = jobs[0] || null;
+  const collectionNextStep = useMemo(() => {
+    if (!latestCollectionJob) {
+      return {
+        title: t("创建任务后下一步怎么做", "What to do after creating a job"),
+        body: t(
+          "点击“创建任务”后，先看下面第一条任务卡片的状态。状态变成“已完成”后，再去右侧“样本”看具体抓到的内容。",
+          "After creating a job, watch the first task card below. Once the status becomes completed, move to Samples to review the collected content.",
+        ),
+        actions: [
+          { href: "#samples", label: t("去看样本区", "Go to Samples") },
+          { href: "#analyze", label: t("去看分析区", "Go to Analyze") },
+        ],
       };
-      current.jobs += 1;
-      current.normalizedItemCount += job.metadata?.normalizedItemCount || 0;
-      current.fallbackItemCount += job.metadata?.fallbackItemCount || 0;
-      current.fallbackUsedCount += job.metadata?.fallbackUsed ? 1 : 0;
-      stats.set(provider, current);
     }
 
-    return Array.from(stats.entries());
-  }, [jobs]);
+    if (latestCollectionJob.status === "pending" || latestCollectionJob.status === "running") {
+      return {
+        title: t("任务已经提交，先等它跑完", "The job is queued, wait for completion"),
+        body: t(
+          `当前任务 ${latestCollectionJob.id} 正在后台处理。先看下面这条任务卡片，等状态变成“已完成”后，再去“样本”看抓到的内容。页面会自动刷新，不需要重复点“创建任务”。`,
+          `Job ${latestCollectionJob.id} is processing in the background. Watch the task card below, then go to Samples after it completes. The page refreshes automatically, so you do not need to click Create Job again.`,
+        ),
+        actions: [{ href: "#samples", label: t("完成后去看样本", "Review Samples after completion") }],
+      };
+    }
+
+    if (latestCollectionJob.status === "completed") {
+      return {
+        title: t("任务已完成，下一步看样本和分析", "The job completed, review Samples and Analyze next"),
+        body: t(
+          `当前任务 ${latestCollectionJob.id} 已完成。建议先去“样本”确认标题、正文、作者和质量分是否正常；如果样本看起来没问题，再去“分析结果”和“最近一次真实工作流”继续看后续输出。`,
+          `Job ${latestCollectionJob.id} completed. First review Samples for title, content, author, and quality. If the samples look correct, continue to Analyze and the latest workflow result.`,
+        ),
+        actions: [
+          { href: "#samples", label: t("先看样本", "Review Samples") },
+          { href: "#analyze", label: t("再看分析结果", "Review Analyze") },
+          { href: "#overview", label: t("看最近工作流", "Review latest workflow") },
+        ],
+      };
+    }
+
+    return {
+      title: t("任务失败，先看原因再继续", "The job failed, check the reason first"),
+      body: t(
+        `当前任务 ${latestCollectionJob.id} 失败了。请先看下面任务卡片里的错误信息；如果是登录态或 Cookie 问题，请先回到“平台接入”重新保存并验证 Cookie，然后再重试。`,
+        `Job ${latestCollectionJob.id} failed. Read the error in the task card first. If this is a cookie or login issue, go back to Platform Access, save a fresh cookie, verify it, and then try again.`,
+      ),
+      actions: [
+        { href: "#collect", label: t("查看失败任务", "Review failed job") },
+        { href: "#overview", label: t("回到总览", "Back to Overview") },
+      ],
+    };
+  }, [latestCollectionJob, locale]);
   const selectedCollectorCapability = useMemo(() => {
     if (!capabilities) return null;
     if (collectForm.providerId === "xiaohongshu-managed") return capabilities.managed;
@@ -483,6 +496,118 @@ export default function App() {
     }
     return selectedCollectorCapability.ready;
   }, [selectedCollectorCapability]);
+  const helpSections = useMemo(() => {
+    if (locale === "zh") {
+      return {
+        manual: [
+          {
+            title: "推荐使用顺序",
+            points: [
+              "先在平台账号区域保存并验证小红书 Cookie。",
+              "再到“采集”里输入关键词、数量、排序和采集器。",
+              "先看“采集任务”确认任务是否“已完成”。",
+              "再看“样本”确认抓到的内容和质量分。",
+              "样本没问题后，再继续看分析、模式库和生成草稿。",
+            ],
+          },
+          {
+            title: "采集成果在哪里看",
+            points: [
+              "先看“采集任务”：这里确认任务成功没有、失败原因是什么、抓了多少条。",
+              "再看“样本”：这里才是具体成果，会展示标题、作者、发布时间、正文片段、封面、标签和质量分。",
+              "如果任务不是“已完成”，请先看任务卡片里的错误提示，不要直接判断系统没抓到内容。",
+            ],
+          },
+          {
+            title: "如何跑完整链路",
+            points: [
+              "如果你想一步一步看，就按“采集 -> 样本 -> 分析 -> 模式库 -> 生成”的顺序使用。",
+              "如果你想自动跑完整流程，请使用“运行当前采集器工作流”或“重新运行最近一次工作流”。",
+              "最终集中看“最近一次真实工作流”，这里会汇总样本质量、AI 来源、模式快照、生成快照和结论。",
+            ],
+          },
+        ],
+        cookie: [
+          {
+            title: "如何拿到小红书 Cookie",
+            points: [
+              "先在 Chrome 中打开小红书，并确认当前已经登录。",
+              "打开开发者工具：Mac 常用快捷键是 Option + Command + I。",
+              "在开发者工具顶部一排标签里，点击“Network”。如果你没看到，就先点最上方那排里的 Network 或“网络”。",
+              "打开 Network 以后，回到小红书页面，随便点一下搜索、切一下页面，或者直接刷新页面，让列表里出现很多请求。",
+              "在 Network 面板左上角的过滤框里，输入 `xiaohongshu`，如果没有结果，就输入 `edith` 试一下。",
+              "在下面请求列表里，点击任意一个域名包含 `xiaohongshu.com` 或 `edith.xiaohongshu.com` 的请求。最常见的是名字里带 `search`、`notes`、`recommend` 的请求。",
+              "点开某个请求后，右边会出现详情。找到 `Headers` 标签，然后往下看 `Request Headers`。",
+              "在 `Request Headers` 里找到一行叫 `cookie` 的内容。注意是小写 `cookie`，不是 `set-cookie`。",
+              "把这一整行 `cookie:` 后面的全部内容完整复制下来，不要漏掉中间的分号。",
+              "你需要的是整串 Cookie，例如：a1=xxx; web_session=xxx; webId=xxx; ...;",
+              "不要只复制单个字段，也不要只复制页面上的零散文本。",
+            ],
+          },
+          {
+            title: "如何在系统里保存和验证",
+            points: [
+              "回到 ViralLab 页面后，先往下找到“平台接入”这个区块。",
+              "在“平台接入”区块里，找到输入框标题“⼩红书 Cookie 内容”。",
+              "把你刚刚复制的整串 Cookie，粘贴进这个大输入框里，不是粘贴到关键词框，也不是粘贴到搜索框。",
+              "粘贴完成后，点击输入框下面那个按钮：“保存采集 Cookie”。",
+              "点击保存后，状态通常会先变成“已保存”，这代表系统已经收到 Cookie。",
+              "接着点击“验证 Cookie”，系统会自动带着 Cookie 打开搜索页并检查是否仍然有效。",
+              "只有状态变成“已验证”，才建议正式发起真实采集。",
+            ],
+          },
+          {
+            title: "Cookie 失效以后怎么办",
+            points: [
+              "如果你看到 -101、无登录信息、需要登录，或者系统提示当前 Cookie 不可用，通常就是 Cookie 失效了。",
+              "正确做法不是反复重试旧任务，而是重新打开小红书扫码登录。",
+              "登录后重新复制最新 Cookie，覆盖保存到 ViralLab，然后再次点击“验证 Cookie”。",
+              "看到状态恢复成“已验证”之后，再重新发起采集任务。",
+            ],
+          },
+        ],
+      };
+    }
+
+    return {
+      manual: [
+        {
+          title: "Recommended flow",
+          points: [
+            "Save and verify the Xiaohongshu cookie first.",
+            "Then create a collection job with keyword, target count, sorting, and provider.",
+            "Check Collection Jobs first to confirm the task completed.",
+            "Then review Samples to inspect quality and correctness.",
+            "Move on to analyses, patterns, and drafts only after the sample quality looks good.",
+          ],
+        },
+        {
+          title: "Where to review results",
+          points: [
+            "Use Collection Jobs to see whether the task succeeded and why it failed if not.",
+            "Use Samples to inspect the actual titles, authors, publish times, content snippets, covers, tags, and quality scores.",
+          ],
+        },
+      ],
+      cookie: [
+        {
+          title: "How to capture the cookie",
+          points: [
+            "Open Xiaohongshu in Chrome and make sure you are logged in.",
+            "Open DevTools with Option + Command + I on Mac.",
+            "In the Network panel, copy the full Cookie request header from any request to xiaohongshu.com.",
+          ],
+        },
+        {
+          title: "How to verify and recover",
+          points: [
+            "Paste the full cookie string into ViralLab, save it, then click Verify Cookie.",
+            "If you see -101 or login-required, log in again, copy the latest cookie, save it again, and re-verify before collecting.",
+          ],
+        },
+      ],
+    };
+  }, [locale]);
 
   const apiFetch = async (path: string, options: RequestInit = {}) => {
     const headers = new Headers(options.headers || {});
@@ -859,6 +984,12 @@ export default function App() {
           <a href="#generate">{t("生成", "Generate")}</a>
         </nav>
         <div className="topbar-actions">
+          <button className="topbar-help secondary-btn" onClick={() => setHelpTab("manual")} type="button">
+            {t("使用说明", "User Guide")}
+          </button>
+          <button className="topbar-help secondary-btn" onClick={() => setHelpTab("cookie")} type="button">
+            {t("Cookie 指引", "Cookie Guide")}
+          </button>
           {user ? <div className="user-badge">{user.displayName}</div> : null}
           <div className="lang-switch sidebar-lang-switch">
             <button className={locale === "zh" ? "active" : ""} onClick={() => setLocale("zh")} type="button">中文</button>
@@ -868,369 +999,96 @@ export default function App() {
         </div>
       </header>
 
-      <main className="content">
-        <section className="hero-panel" id="overview">
-          <div>
-            <p className="eyebrow">{t("V1 控制台", "V1 Console")}</p>
-            <h2>{t("打通从小红书采集到生成的完整闭环。", "Build the Xiaohongshu collection to generation loop.")}</h2>
-            <p className="hero-copy">
-              {t(
-                "当前本地 MVP 已经能跑通整条工作流：创建小红书采集任务、生成样本、分析爆款因子、提炼可复用 Pattern，并输出新的草稿。数据由 API 本地持久化，方便端到端联调和审阅。",
-                "The local MVP already runs a full simulated workflow: create a Xiaohongshu collection job, generate sample content, analyze viral factors, extract a reusable pattern, and output a new draft. Data is persisted locally by the API so the module can be reviewed end to end.",
-              )}
-            </p>
-          </div>
-          <div className="hero-actions">
-            <button onClick={() => void refreshAll()}>{t("刷新工作区", "Refresh Workspace")}</button>
-            <button className="secondary" onClick={handleAnalyze}>{t("分析最新样本", "Analyze Latest Samples")}</button>
-            <button
-              className="secondary"
-              disabled={loading || !debugSummary?.latestRealJob || debugSummary.latestRealJob.status !== "completed"}
-              onClick={handleRunLatestRealPipeline}
-            >
-              {t("运行最近真实流程", "Run Latest Real Pipeline")}
-            </button>
-          </div>
-        </section>
-
-        {workspaceMessage ? <section className="panel compact-panel"><p className="hero-copy">{workspaceMessage}</p></section> : null}
-        {workflowJobs[0] ? (
-          <section className="panel compact-panel">
-            <div className="panel-head">
-              <h3>{t("工作流任务", "Workflow Jobs")}</h3>
-              <span className="pill">{formatStatus(workflowJobs[0].status, locale)}</span>
-            </div>
-            {workflowJobs[0].metadata?.workflowVerdict ? (
-              <div className="audit-meta">
-                <span className={`quality-pill ${workflowJobs[0].metadata.workflowVerdict === "strong" ? "good" : workflowJobs[0].metadata.workflowVerdict === "usable" ? "medium" : "weak"}`}>
-                  {formatWorkflowVerdict(workflowJobs[0].metadata.workflowVerdict, locale)}
-                </span>
-                <span>{translateKnownUiText(workflowJobs[0].metadata.workflowSummary, locale)}</span>
+      {helpTab ? (
+        <div className="help-modal-backdrop" onClick={() => setHelpTab(null)}>
+          <section className="help-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="help-modal-header">
+              <div>
+                <p className="eyebrow">{t("帮助中心", "Help Center")}</p>
+                <h3>{helpTab === "manual" ? t("ViralLab 使用说明", "ViralLab User Guide") : t("小红书 Cookie 指引", "Xiaohongshu Cookie Guide")}</h3>
               </div>
-            ) : null}
-            {workflowJobs[0].metadata?.workflowVerdict ? (
-              <div className="pattern-meta">
-                <span>{t("平均质量", "avg quality")} {workflowJobs[0].metadata.averageSampleQuality ?? "--"}/100</span>
-                <span>{workflowJobs[0].metadata.llmAnalysisCount ?? 0} {t("条 LLM 分析", "LLM analyses")}</span>
-              </div>
-            ) : null}
-            <div className="pattern-meta">
-              <span>{workflowJobs[0].id}</span>
-              <span>{translateKnownUiText(workflowJobs[0].metadata?.message, locale)}</span>
-            </div>
-            {workflowJobs[0].metadata?.workflowVerdict ? (
-              <div className="pattern-meta">
-                <span>{t("Pattern 来源", "pattern")} {workflowJobs[0].metadata.patternSource || "--"}</span>
-                <span>{t("生成来源", "generate")} {workflowJobs[0].metadata.generationSource || "--"}</span>
-              </div>
-            ) : null}
-            <div className="pattern-meta">
-              <span>{t("进度", "progress")} {workflowJobs[0].progress}%</span>
-              <span>{workflowJobs[0].metadata?.providerId || workflowJobs[0].metadata?.stage || workflowJobs[0].targetJobId || "--"}</span>
-            </div>
-            {workflowJobs[0].metadata?.patternId || workflowJobs[0].metadata?.contentId ? (
-              <div className="pattern-meta">
-                <span>{workflowJobs[0].metadata?.patternId || "--"}</span>
-                <span>{workflowJobs[0].metadata?.contentId || "--"}</span>
-              </div>
-            ) : null}
-            {workflowJobs[0].errorMessage ? <span className="status-note">{workflowJobs[0].errorMessage}</span> : null}
-            <div className="action-row">
-              <button
-                className="secondary-btn"
-                disabled={loading}
-                onClick={handleRerunLatestWorkflow}
-                type="button"
-              >
-                {t("重跑最近工作流", "Re-run Latest Workflow")}
+              <button className="secondary-btn help-close" onClick={() => setHelpTab(null)} type="button">
+                {t("关闭", "Close")}
               </button>
             </div>
-          </section>
-        ) : null}
-        <section className="panel compact-panel">
-          <div className="panel-head">
-            <h3>{t("工作流范围", "Workflow Scope")}</h3>
-            <span className="pill">{t("来源过滤", "Provider Filter")}</span>
-          </div>
-          <form
-            className="inline-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void handleRunLatestRealPipeline();
-            }}
-          >
-            <select
-              value={workflowForm.providerId}
-              onChange={(event) => setWorkflowForm((prev) => ({ ...prev, providerId: event.target.value }))}
-            >
-              <option value="xiaohongshu-playwright">xiaohongshu-playwright</option>
-              <option value="xiaohongshu-managed">xiaohongshu-managed</option>
-            </select>
-            <input
-              type="number"
-              min={1}
-              max={12}
-              value={workflowForm.sampleLimit}
-              onChange={(event) =>
-                setWorkflowForm((prev) => ({ ...prev, sampleLimit: Number(event.target.value || 5) }))
-              }
-            />
-            <select
-              value={workflowForm.forceReanalyze ? "force" : "reuse"}
-              onChange={(event) =>
-                setWorkflowForm((prev) => ({ ...prev, forceReanalyze: event.target.value === "force" }))
-              }
-            >
-              <option value="force">{t("强制重新分析", "force reanalyze")}</option>
-              <option value="reuse">{t("复用分析结果", "reuse analyses")}</option>
-            </select>
-            <button
-              type="submit"
-              disabled={
-                loading ||
-                (workflowForm.providerId === "xiaohongshu-playwright"
-                  ? !debugSummary?.latestRealJob || debugSummary.latestRealJob.status !== "completed"
-                  : capabilities?.managed.enabled === false)
-              }
-            >
-              {t("运行指定来源流程", "Run Provider Pipeline")}
-            </button>
-          </form>
-          <p className="hint-text">
-            {t("将流程限制到单一真实采集来源，便于分别评估 Playwright 与 managed 样本。", "Scope the pipeline to a single real collector provider so Playwright and managed samples can be evaluated separately.")}
-          </p>
-        </section>
-        {workflowResult ? (
-          <section className="panel compact-panel">
-            <div className="panel-head">
-              <h3>{t("最近一次真实工作流", "Latest Real Workflow")}</h3>
-              <span className="pill">{workflowResult.success ? t("已完成", "Completed") : t("已阻断", "Blocked")}</span>
+            <div className="help-tab-row">
+              <button className={helpTab === "manual" ? "active" : ""} onClick={() => setHelpTab("manual")} type="button">
+                {t("系统使用", "Using ViralLab")}
+              </button>
+              <button className={helpTab === "cookie" ? "active" : ""} onClick={() => setHelpTab("cookie")} type="button">
+                {t("Cookie 获取与排障", "Cookie setup & recovery")}
+              </button>
             </div>
-            {workflowResult.diagnostics ? (
-              <div className="audit-meta">
-                <span className={`quality-pill ${workflowResult.diagnostics.workflowVerdict === "strong" ? "good" : workflowResult.diagnostics.workflowVerdict === "usable" ? "medium" : "weak"}`}>
-                  {formatWorkflowVerdict(workflowResult.diagnostics.workflowVerdict, locale)}
-                </span>
-                <span>{translateKnownUiText(workflowResult.diagnostics.workflowSummary, locale)}</span>
-              </div>
-            ) : null}
-            <div className="pattern-meta">
-              <span>{workflowResult.job?.id || "--"}</span>
-              <span>{workflowResult.pattern?.name || workflowResult.message || t("尚未生成 Pattern", "No pattern generated")}</span>
-            </div>
-            <div className="pattern-meta">
-              <span>{workflowResult.samples?.length || 0} {t("条样本", "samples")}</span>
-              <span>{workflowResult.analyses?.length || 0} {t("条分析", "analyses")}</span>
-            </div>
-            {workflowResult.diagnostics ? (
-              <div className="pattern-meta">
-                <span>{t("平均质量", "avg quality")} {workflowResult.diagnostics.averageSampleQuality ?? "--"}/100</span>
-                <span>
-                  {t("最高样本", "top sample")} {workflowResult.diagnostics.topSampleQuality ?? "--"}/100
-                </span>
-              </div>
-            ) : null}
-            {workflowResult.samples?.length ? (
-              <div className="draft-tags quality-flags">
-                {workflowResult.samples.slice(0, 5).map((sample) => (
-                  <span key={sample.id}>
-                    {sample.qualityScore}/100 · {sample.title}
-                  </span>
-                ))}
-              </div>
-            ) : null}
-            {workflowResult.diagnostics ? (
-              <div className="table-list">
-                <div className="sample-card">
-                  <strong>{t("流程诊断", "Pipeline Diagnostics")}</strong>
-                  <div className="pattern-meta">
-                    <span>{workflowResult.diagnostics.llmAnalysisCount} {t("条 LLM 分析", "LLM analyses")}</span>
-                    <span>{workflowResult.diagnostics.fallbackAnalysisCount} {t("条降级分析", "fallback analyses")}</span>
-                  </div>
-                  <div className="pattern-meta">
-                    <span>{workflowResult.diagnostics.localAnalysisCount} {t("条本地分析", "local analyses")}</span>
-                    <span>{t("Pattern 置信度", "pattern confidence")} {workflowResult.diagnostics.patternConfidence ?? "--"}</span>
-                  </div>
-                  <div className="pattern-meta">
-                    <span>{t("Pattern 来源", "pattern")} {workflowResult.diagnostics.patternSource || "--"}</span>
-                    <span>{t("生成来源", "generate")} {workflowResult.diagnostics.generationSource || "--"}</span>
-                  </div>
-                  <div className="pattern-meta">
-                    <span>{workflowResult.diagnostics.generatedTitleCount} {t("个标题", "titles")}</span>
-                    <span>{workflowResult.diagnostics.generatedTagCount} {t("个标签", "tags")}</span>
-                  </div>
-                  {workflowResult.analyses?.length ? (
-                    <div className="audit-meta">
-                      <a className="sample-link" href="#samples">{t("打开样本", "open samples")}</a>
-                      <a className="sample-link" href="#analyze">{t("打开分析", "open analyses")}</a>
-                      <span>{workflowResult.analyses.length} {t("条工作流分析已关联", "workflow analyses linked")}</span>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-            {workflowResult.pattern || workflowResult.generated ? (
-              <div className="table-list">
-                {workflowResult.pattern ? (
-                  <div className="sample-card">
-                    <strong>{t("Pattern 快照", "Pattern Snapshot")}</strong>
-                    <div className="audit-meta">
-                      <span className={`audit-pill ${workflowResult.pattern.fallbackStatus}`}>{formatAiSource(workflowResult.pattern, locale)}</span>
-                      <span>{t("置信度", "confidence")} {workflowResult.pattern.confidenceScore}</span>
-                      <a className="sample-link" href="#patterns">{t("打开模式库", "open pattern library")}</a>
-                    </div>
-                    <div className="pattern-meta">
-                      <span>{workflowResult.pattern.topic}</span>
-                      <span>{workflowResult.pattern.sourceSampleIds.length} {t("条来源样本", "source samples")}</span>
-                    </div>
-                    <p className="sample-summary">{workflowResult.pattern.description}</p>
-                  </div>
-                ) : null}
-                {workflowResult.generated ? (
-                  <div className="sample-card">
-                    <strong>{t("生成快照", "Generation Snapshot")}</strong>
-                    <div className="audit-meta">
-                      <span className={`audit-pill ${workflowResult.generated.fallbackStatus}`}>{formatAiSource(workflowResult.generated, locale)}</span>
-                      <span>{workflowResult.generated.titleCandidates.length} {t("个标题候选", "title candidates")}</span>
-                      <a className="sample-link" href="#generated">{t("打开最新草稿", "open latest draft")}</a>
-                    </div>
-                    {workflowResult.generated.titleCandidates.length ? (
-                      <div className="draft-tags quality-flags">
-                        {workflowResult.generated.titleCandidates.slice(0, 3).map((title) => (
-                          <span key={title}>{title}</span>
-                        ))}
-                      </div>
-                    ) : null}
-                    {workflowResult.generated.tags.length ? (
-                      <div className="draft-tags quality-flags">
-                        {workflowResult.generated.tags.slice(0, 6).map((tag) => (
-                          <span key={tag}>#{tag}</span>
-                        ))}
-                      </div>
-                    ) : null}
-                    <p className="sample-summary">{workflowResult.generated.coverCopy || workflowResult.generated.generationNotes}</p>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-            {workflowResult.generated?.titleCandidates?.[0] ? (
-              <span className="status-note">{workflowResult.generated.titleCandidates[0]}</span>
-            ) : null}
-          </section>
-        ) : null}
-
-        <section className="stats-grid">
-          {stats.map((item) => (
-            <StatCard
-              key={item.label}
-              label={formatOverviewLabel(item.label, locale)}
-              value={item.value}
-              note={formatOverviewNote(item.note, locale)}
-            />
-          ))}
-        </section>
-        {providerSampleStats.length ? (
-          <section className="panel compact-panel">
-            <div className="panel-head">
-              <h3>{t("样本来源", "Sample Sources")}</h3>
-              <span className="pill">{t("来源", "Providers")}</span>
-            </div>
-            <div className="draft-tags">
-              {providerSampleStats.map(([provider, count]) => (
-                <span key={provider}>{provider} · {count}</span>
-              ))}
-            </div>
-          </section>
-        ) : null}
-        {sampleQualityStats ? (
-          <section className="panel compact-panel">
-            <div className="panel-head">
-              <h3>{t("样本质量", "Sample Quality")}</h3>
-              <span className="pill">{t("自研通道", "Self-Hosted")}</span>
-            </div>
-            <div className="table-list">
-              <div className="sample-card">
-                <strong>{t("质量概览", "Quality Overview")}</strong>
-                <div className="pattern-meta">
-                  <span>{sampleQualityStats.averageScore}/100 {t("平均分", "average")}</span>
-                  <span>{sampleQualityStats.strongCount} {t("优质", "strong")}</span>
-                </div>
-                <div className="pattern-meta">
-                  <span>{sampleQualityStats.weakCount} {t("弱样本", "weak")}</span>
-                  <span>{samples.length} {t("总样本", "total samples")}</span>
-                </div>
-                {sampleQualityStats.topFlags.length ? (
-                  <div className="draft-tags quality-flags">
-                    {sampleQualityStats.topFlags.map(([flag, count]) => (
-                      <span key={flag}>{formatQualityFlag(flag, locale)} · {count}</span>
+            <p className="help-intro">
+              {helpTab === "manual"
+                ? t("这部分会告诉用户系统怎么用，以及采集结果应该在哪里看。", "This section explains how to use the system and where to review collected results.")
+                : t("这部分专门解决真实采集最常见的问题：怎么拿 Cookie、怎么验证、失效后怎么恢复。", "This section focuses on how to capture, verify, and refresh the cookie for real collection.")}
+            </p>
+            <div className="help-section-list">
+              {helpSections[helpTab].map((section) => (
+                <article className="help-section-card" key={section.title}>
+                  <h4>{section.title}</h4>
+                  <ul>
+                    {section.points.map((point) => (
+                      <li key={point}>{point}</li>
                     ))}
-                  </div>
-                ) : (
-                  <span className="status-note">{t("当前样本未发现明显质量缺口。", "No quality gaps detected on current samples.")}</span>
-                )}
-              </div>
-            </div>
-          </section>
-        ) : null}
-        {providerJobStats.length ? (
-          <section className="panel compact-panel">
-            <div className="panel-head">
-              <h3>{t("来源诊断", "Provider Diagnostics")}</h3>
-              <span className="pill">{t("任务", "Jobs")}</span>
-            </div>
-            <div className="table-list">
-              {providerJobStats.map(([provider, stat]) => (
-                <div className="sample-card" key={provider}>
-                  <strong>{provider}</strong>
-                  <div className="pattern-meta">
-                    <span>{stat.jobs} {t("个任务", "jobs")}</span>
-                    <span>{stat.normalizedItemCount} {t("条标准化结果", "normalized")}</span>
-                  </div>
-                  <div className="pattern-meta">
-                    <span>{stat.fallbackItemCount} {t("条回退结果", "fallback items")}</span>
-                    <span>{stat.fallbackUsedCount} {t("次回退执行", "fallback runs")}</span>
-                  </div>
-                </div>
+                  </ul>
+                </article>
               ))}
             </div>
           </section>
-        ) : null}
+        </div>
+      ) : null}
 
-        <section className="panel-grid panel-grid-bottom">
-          <article className="panel panel-wide">
-            <div className="panel-head">
-              <h3>{t("采集器就绪状态", "Collector Readiness")}</h3>
-              <span className="pill">{t("平台接入", "Platform Access")}</span>
+      <main className="content">
+        <section className="panel process-panel" id="overview">
+          <div className="panel-head">
+            <div>
+              <p className="eyebrow">{t("ViralLab 流程", "ViralLab Flow")}</p>
+              <h2 className="process-title">{t("按步骤走：先接入，再采集，再查看，再分析，再生成。", "Follow the flow: connect, collect, review, analyze, and generate.")}</h2>
             </div>
-            <div className="collector-status-grid">
-              <div className="sample-card">
-                <strong>{t("模拟采集器", "Mock Collector")}</strong>
-                <span>{translateKnownUiText(capabilities?.mock.description, locale)}</span>
-                <div className="pattern-meta">
-                  <span>{capabilities?.mock.ready ? t("已就绪", "ready") : t("未就绪", "not ready")}</span>
-                  <span>{capabilities?.mock.provider || "mock-local"}</span>
-                </div>
+            <div className="hero-actions">
+              <button onClick={() => void refreshAll()}>{t("刷新工作区", "Refresh Workspace")}</button>
+            </div>
+          </div>
+          <div className="process-strip">
+            <div className="process-chip"><span>1</span>{t("平台接入", "Platform Access")}</div>
+            <div className="process-chip"><span>2</span>{t("创建采集任务", "Create Collection Job")}</div>
+            <div className="process-chip"><span>3</span>{t("查看样本", "Review Samples")}</div>
+            <div className="process-chip"><span>4</span>{t("分析与提炼", "Analyze & Pattern")}</div>
+            <div className="process-chip"><span>5</span>{t("生成草稿", "Generate Draft")}</div>
+          </div>
+          {workspaceMessage ? <p className="hero-copy compact-copy">{workspaceMessage}</p> : null}
+        </section>
+
+        <div className="flow-stack">
+          <article className="panel" id="access">
+            <div className="step-head">
+              <div className="step-index">1</div>
+              <div>
+                <h3>{t("先完成平台接入", "Set up platform access first")}</h3>
+                <p className="step-copy">{t("如果你要跑真实小红书采集，先把 Cookie 保存并验证。没有完成这一步，真实采集大概率会失败。", "For real Xiaohongshu collection, save and verify the cookie first. Without this step, real collection will usually fail.")}</p>
               </div>
+            </div>
+            <div className="focus-status-grid">
               <div className="sample-card">
-                <strong>{t("真实采集器", "Real Collector")}</strong>
-                <span>{translateKnownUiText(capabilities?.real.description, locale)}</span>
+                <strong>{t("真实采集状态", "Real collector status")}</strong>
                 <div className="pattern-meta">
                   <span>{capabilities?.real.enabled ? t("已启用", "enabled") : t("未启用", "disabled")}</span>
                   <span>{capabilities?.real.hasCookie ? `${t("Cookie", "cookie")} ${formatStatus(capabilities?.real.cookieStatus || "saved", locale)}` : t("缺少 Cookie", "cookie missing")}</span>
                 </div>
-                {capabilities?.real.verificationMessage ? (
-                  <span className="status-note">{capabilities.real.verificationMessage}</span>
-                ) : null}
+                <span className="status-note">{capabilities?.real.verificationMessage || t("先保存并验证小红书 Cookie。", "Save and verify the Xiaohongshu cookie first.")}</span>
               </div>
-              <div className="sample-card">
-                <strong>{t("托管采集器", "Managed Collector")}</strong>
-                <span>{translateKnownUiText(capabilities?.managed.description, locale)}</span>
-                <div className="pattern-meta">
-                  <span>{capabilities?.managed.enabled ? t("已启用", "enabled") : t("未启用", "disabled")}</span>
-                  <span>{capabilities?.managed.provider || "xiaohongshu-managed"}</span>
+              {platformAccounts[0] ? (
+                <div className="sample-card">
+                  <strong>{platformAccounts[0].accountName}</strong>
+                  <div className="pattern-meta">
+                    <span>{formatStatus(platformAccounts[0].cookieStatus, locale)}</span>
+                    <span>{platformAccounts[0].lastVerifiedAt || "--"}</span>
+                  </div>
+                  <span className="status-note">{translateKnownUiText(platformAccounts[0].verificationMessage, locale)}</span>
                 </div>
-                <span className="status-note">{t("预留给 XCrawl 一类托管抓取来源。", "Reserved slot for XCrawl-like managed providers.")}</span>
-              </div>
+              ) : null}
             </div>
             <form className="stack-form" onSubmit={handleSaveCookies}>
               <label>
@@ -1249,110 +1107,32 @@ export default function App() {
                   onChange={(event) => setCookieForm((prev) => ({ ...prev, cookieBlob: event.target.value }))}
                 />
               </label>
-              <button disabled={loading} type="submit">{t("保存采集 Cookie", "Save Collector Cookie")}</button>
-            </form>
-            <div className="action-row">
-              <button
-                className="secondary-btn"
-                disabled={loading || platformAccounts.length === 0}
-                onClick={handleVerifyCookie}
-                type="button"
-              >
-                {t("验证 Cookie", "Verify Cookie")}
-              </button>
-            </div>
-            <div className="table-list">
-              {platformAccounts.map((account) => (
-                <div className="table-row platform-row" key={account.id}>
-                  <div>
-                    <strong>{account.accountName}</strong>
-                    <span>{account.id}</span>
-                  </div>
-                  <div>
-                    <strong>xiaohongshu</strong>
-                    <span>{formatStatus(account.cookieStatus, locale)}</span>
-                  </div>
-                  <div>
-                    <strong>{account.lastVerifiedAt || "--"}</strong>
-                    <span>{t("最近验证", "last verified")}</span>
-                  </div>
-                  <div>
-                    <strong>{translateKnownUiText(account.verificationMessage, locale)}</strong>
-                    <span>{t("验证说明", "verification note")}</span>
-                  </div>
-                  <div className="platform-debug">
-                    <strong>{account.verificationMetadata?.reason || "--"}</strong>
-                    <span>{t("原因", "reason")}</span>
-                    {account.verificationMetadata?.diagnostics?.stateSummary ? (
-                      <span>
-                        {t("搜索流", "state feeds")}: {account.verificationMetadata.diagnostics.stateSummary.searchFeedCount || 0}
-                        {" · "}
-                        {t("首页流", "home feeds")}: {account.verificationMetadata.diagnostics.stateSummary.homeFeedCount || 0}
-                      </span>
-                    ) : null}
-                    {account.verificationMetadata?.artifacts?.htmlPath ? (
-                      <span>{account.verificationMetadata.artifacts.htmlPath}</span>
-                    ) : null}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </article>
-          <article className="panel">
-            <div className="panel-head">
-              <h3>{t("采集调试", "Collector Debug")}</h3>
-              <span className="pill">{t("诊断", "Diagnostics")}</span>
-            </div>
-            {debugSummary?.account ? (
-              <div className="debug-card">
-                <strong>{formatStatus(debugSummary.account.cookieStatus, locale)}</strong>
-                <span>{translateKnownUiText(debugSummary.account.verificationMessage, locale) || t("暂无验证信息。", "No verification message yet.")}</span>
-                <div className="debug-grid">
-                  <span>{t("原因", "reason")}: {debugSummary.account.verificationMetadata?.reason || "--"}</span>
-                  <span>
-                    {t("搜索流", "state feeds")}: {debugSummary.account.verificationMetadata?.diagnostics?.stateSummary?.searchFeedCount || 0}
-                  </span>
-                  <span>
-                    {t("首页流", "home feeds")}: {debugSummary.account.verificationMetadata?.diagnostics?.stateSummary?.homeFeedCount || 0}
-                  </span>
-                  <span>
-                    {t("网络响应", "network responses")}: {debugSummary.account.verificationMetadata?.diagnostics?.networkSummary?.capturedResponses || 0}
-                  </span>
-                  {debugSummary.account.verificationMetadata?.diagnostics?.networkSummary?.authFailure ? (
-                    <span>
-                      api auth failure: {debugSummary.account.verificationMetadata.diagnostics.networkSummary.authFailure.code ?? "--"}
-                      {" · "}
-                      {debugSummary.account.verificationMetadata.diagnostics.networkSummary.authFailure.msg || "--"}
-                    </span>
-                  ) : null}
-                  <span>
-                    {t("最近任务", "last job")}: {formatStatus(debugSummary.latestRealJob?.status || "", locale) || t("暂无真实任务", "no real job yet")}
-                  </span>
-                </div>
-                {debugSummary.account.verificationMetadata?.diagnostics?.networkSummary?.urls?.[0] ? (
-                  <span>{debugSummary.account.verificationMetadata.diagnostics.networkSummary.urls[0]}</span>
-                ) : null}
-                {debugSummary.account.verificationMetadata?.artifacts?.screenshotPath ? (
-                  <span>{debugSummary.account.verificationMetadata.artifacts.screenshotPath}</span>
-                ) : null}
-                {debugSummary.account.verificationMetadata?.artifacts?.htmlPath ? (
-                  <span>{debugSummary.account.verificationMetadata.artifacts.htmlPath}</span>
-                ) : null}
-                {debugSummary.latestRealJob?.metadata?.artifacts?.htmlPath ? (
-                  <span>{t("任务 HTML", "job html")}: {debugSummary.latestRealJob.metadata.artifacts.htmlPath}</span>
-                ) : null}
+              <p className="hint-text">
+                {t("请把浏览器里复制出来的整串 Cookie 粘贴到这个输入框，然后点击“保存采集 Cookie”。", "Paste the full browser cookie string into this box, then click “Save Collector Cookie”.")}
+              </p>
+              <div className="action-row">
+                <button disabled={loading} type="submit">{t("保存采集 Cookie", "Save Collector Cookie")}</button>
+                <button
+                  className="secondary-btn"
+                  disabled={loading || platformAccounts.length === 0}
+                  onClick={handleVerifyCookie}
+                  type="button"
+                >
+                  {t("验证 Cookie", "Verify Cookie")}
+                </button>
               </div>
-            ) : (
-              <p className="empty-state">{t("先保存小红书 Cookie，才能看到调试数据。", "Save a Xiaohongshu cookie to unlock debug data.")}</p>
-            )}
+            </form>
           </article>
-        </section>
 
-        <section className="panel-grid">
           <article className="panel" id="collect">
             <div className="panel-head">
-              <h3>{t("采集任务", "Collection Jobs")}</h3>
-              <span className="pill">{t("采集器", "Collector")}</span>
+              <div className="step-head">
+                <div className="step-index">2</div>
+                <div>
+                  <h3>{t("创建采集任务", "Create Collection Job")}</h3>
+                  <p className="step-copy">{t("填写关键词并创建任务。创建之后不要重复点击，先看任务状态。", "Fill in the keyword and create the job. After creating it, do not click repeatedly. Watch the job status first.")}</p>
+                </div>
+              </div>
             </div>
             <form className="inline-form" onSubmit={handleCreateJob}>
               <input
@@ -1425,8 +1205,22 @@ export default function App() {
             ) : collectForm.collectorMode === "real" && collectForm.providerId === "xiaohongshu-managed" ? (
               <p className="hint-text">{t("托管 provider 的 UI 已接好，但后端仍然是预留位。", "Managed provider slot is wired in the UI, but the backend integration is still a stub.")}</p>
             ) : null}
+            <div className="sample-card next-step-card">
+              <div className="panel-head inline-head">
+                <strong>{collectionNextStep.title}</strong>
+                <span className="pill">{t("下一步", "Next Step")}</span>
+              </div>
+              <p className="status-note next-step-copy">{collectionNextStep.body}</p>
+              <div className="action-row">
+                {collectionNextStep.actions.map((action) => (
+                  <a className="secondary-btn nav-action-link" href={action.href} key={action.label}>
+                    {action.label}
+                  </a>
+                ))}
+              </div>
+            </div>
             <div className="table-list">
-              {jobs.map((job) => (
+              {jobs.slice(0, 3).map((job) => (
                 <div className="table-row" key={job.id}>
                   <div>
                     <strong>{job.keyword}</strong>
@@ -1485,9 +1279,30 @@ export default function App() {
 
           <article className="panel" id="samples">
             <div className="panel-head">
-              <h3>{t("样本", "Samples")}</h3>
+              <div className="step-head">
+                <div className="step-index">3</div>
+                <div>
+                  <h3>{t("查看采集样本", "Review collected samples")}</h3>
+                  <p className="step-copy">{t("任务完成后，先看这里。重点确认标题、正文、作者、发布时间和质量分是不是正常。", "After the job completes, start here. Confirm the title, body, author, publish time, and quality score first.")}</p>
+                </div>
+              </div>
               <span className="pill">{t("最新 10 条", "Latest 10")}</span>
             </div>
+            {sampleQualityStats ? (
+              <div className="focus-status-grid compact-focus-grid">
+                <div className="sample-card">
+                  <strong>{t("样本质量概览", "Sample quality overview")}</strong>
+                  <div className="pattern-meta">
+                    <span>{sampleQualityStats.averageScore}/100 {t("平均分", "average")}</span>
+                    <span>{sampleQualityStats.strongCount} {t("优质", "strong")}</span>
+                  </div>
+                  <div className="pattern-meta">
+                    <span>{sampleQualityStats.weakCount} {t("弱样本", "weak")}</span>
+                    <span>{samples.length} {t("总样本", "total samples")}</span>
+                  </div>
+                </div>
+              </div>
+            ) : null}
             <div className="table-list">
               {visibleSamples.map((sample) => (
                 <div
@@ -1537,8 +1352,13 @@ export default function App() {
 
           <article className="panel" id="analyze">
             <div className="panel-head">
-              <h3>{t("分析结果", "Analyses")}</h3>
-              <span className="pill">{t("分析器", "Analyzer")}</span>
+              <div className="step-head">
+                <div className="step-index">4</div>
+                <div>
+                  <h3>{t("分析并提炼模式", "Analyze and extract patterns")}</h3>
+                  <p className="step-copy">{t("样本看起来正常后，再进行分析。分析完再提炼 Pattern，不要反过来操作。", "Only analyze after the samples look correct. Extract a pattern after analysis, not before.")}</p>
+                </div>
+              </div>
             </div>
             <div className="action-row">
               <button onClick={handleAnalyze} disabled={loading || samples.length === 0}>{t("分析前 5 条样本", "Analyze First 5 Samples")}</button>
@@ -1569,9 +1389,6 @@ export default function App() {
                 </div>
               ))}
             </div>
-          </article>
-
-          <article className="panel" id="patterns">
             <div className="panel-head">
               <h3>{t("Pattern 模式库", "Pattern Library")}</h3>
               <span className="pill">{t("模式引擎", "Pattern Engine")}</span>
@@ -1599,13 +1416,16 @@ export default function App() {
               ))}
             </div>
           </article>
-        </section>
 
-        <section className="panel-grid panel-grid-bottom">
           <article className="panel panel-wide" id="generate">
             <div className="panel-head">
-              <h3>{t("生成草稿", "Generate Draft")}</h3>
-              <span className="pill">{t("生成器", "Generator")}</span>
+              <div className="step-head">
+                <div className="step-index">5</div>
+                <div>
+                  <h3>{t("生成草稿", "Generate Draft")}</h3>
+                  <p className="step-copy">{t("有了 Pattern 之后再生成草稿。你可以先用默认参数，先看生成结果是否成型。", "Generate the draft after a pattern exists. Start with the default inputs and inspect the output first.")}</p>
+                </div>
+              </div>
             </div>
             <form className="stack-form" onSubmit={handleGenerate}>
               <div className="field-grid">
@@ -1696,7 +1516,75 @@ export default function App() {
               <p className="empty-state">{t("运行生成流程后，这里会展示最新的小红书草稿。", "Run the generate flow to preview the latest Xiaohongshu draft.")}</p>
             )}
           </article>
-        </section>
+
+          {(workflowResult || workflowJobs[0] || debugSummary?.account) ? (
+            <details className="panel advanced-panel">
+              <summary>{t("高级信息与调试", "Advanced details and debugging")}</summary>
+              {workflowJobs[0] ? (
+                <div className="table-list">
+                  <div className="sample-card">
+                    <strong>{t("最近工作流任务", "Latest workflow job")}</strong>
+                    <div className="pattern-meta">
+                      <span>{workflowJobs[0].id}</span>
+                      <span>{formatStatus(workflowJobs[0].status, locale)}</span>
+                    </div>
+                    {workflowJobs[0].metadata?.workflowVerdict ? (
+                      <div className="audit-meta">
+                        <span className={`quality-pill ${workflowJobs[0].metadata.workflowVerdict === "strong" ? "good" : workflowJobs[0].metadata.workflowVerdict === "usable" ? "medium" : "weak"}`}>
+                          {formatWorkflowVerdict(workflowJobs[0].metadata.workflowVerdict, locale)}
+                        </span>
+                        <span>{translateKnownUiText(workflowJobs[0].metadata.workflowSummary, locale)}</span>
+                      </div>
+                    ) : null}
+                    <div className="action-row">
+                      <button className="secondary-btn" disabled={loading} onClick={handleRerunLatestWorkflow} type="button">
+                        {t("重跑最近工作流", "Re-run Latest Workflow")}
+                      </button>
+                      <button
+                        className="secondary-btn"
+                        disabled={loading || !debugSummary?.latestRealJob || debugSummary.latestRealJob.status !== "completed"}
+                        onClick={handleRunLatestRealPipeline}
+                        type="button"
+                      >
+                        {t("运行最近真实流程", "Run Latest Real Pipeline")}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+              {workflowResult ? (
+                <div className="table-list">
+                  <div className="sample-card">
+                    <strong>{t("最近一次真实工作流", "Latest real workflow")}</strong>
+                    <div className="pattern-meta">
+                      <span>{workflowResult.samples?.length || 0} {t("条样本", "samples")}</span>
+                      <span>{workflowResult.analyses?.length || 0} {t("条分析", "analyses")}</span>
+                    </div>
+                    {workflowResult.diagnostics ? (
+                      <div className="pattern-meta">
+                        <span>{t("平均质量", "avg quality")} {workflowResult.diagnostics.averageSampleQuality ?? "--"}/100</span>
+                        <span>{t("Pattern 来源", "pattern")} {workflowResult.diagnostics.patternSource || "--"}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+              {debugSummary?.account ? (
+                <div className="table-list">
+                  <div className="debug-card">
+                    <strong>{t("采集调试", "Collector Debug")}</strong>
+                    <span>{translateKnownUiText(debugSummary.account.verificationMessage, locale) || t("暂无验证信息。", "No verification message yet.")}</span>
+                    <div className="debug-grid">
+                      <span>{t("原因", "reason")}: {debugSummary.account.verificationMetadata?.reason || "--"}</span>
+                      <span>{t("搜索流", "state feeds")}: {debugSummary.account.verificationMetadata?.diagnostics?.stateSummary?.searchFeedCount || 0}</span>
+                      <span>{t("首页流", "home feeds")}: {debugSummary.account.verificationMetadata?.diagnostics?.stateSummary?.homeFeedCount || 0}</span>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </details>
+          ) : null}
+        </div>
       </main>
     </div>
   );

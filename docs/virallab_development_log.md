@@ -335,6 +335,74 @@
 - `modules/virallab/app` build 通过
 - `modules/virallab/api` build 通过
 
+### 第八十三轮增强：把 Cookie 获取说明写成更细的界面步骤
+- 继续细化顶部帮助弹层里的 `Cookie 指引`，重点改写“如何拿到小红书 Cookie”这一段。
+- 现在说明已经明确到：
+  - 在开发者工具里点哪个标签
+  - 在 Network 面板里需要先做什么动作让请求出现
+  - 过滤框里可以搜什么关键词：
+    - `xiaohongshu`
+    - `edith`
+  - 请求列表里优先点哪些请求：
+    - `search`
+    - `notes`
+    - `recommend`
+  - 右侧具体看哪个区域：
+    - `Headers`
+    - `Request Headers`
+    - `cookie`
+- 目标是把原本偏开发者口吻的描述改成普通用户也能照着操作的步骤说明。
+
+### 本轮验证
+- `modules/virallab/app` build 通过
+
+### 第八十四轮增强：创建采集任务后自动提示下一步
+- 在“采集任务”区块内新增了一个状态驱动的“下一步怎么做”引导卡。
+- 该卡片会根据最近一条采集任务的状态自动变化：
+  - 没有任务：提示先创建任务，然后去看“采集任务”和“样本”
+  - `pending/running`：提示不要重复点按钮，先等待后台处理完成
+  - `completed`：提示先去看“样本”，再看“分析结果”和“最近一次真实工作流”
+  - `failed`：提示先看失败原因，再回到平台接入检查 Cookie
+- 还补了区块内跳转按钮，直接带用户去对应部分，而不是只给一段静态说明。
+
+### 本轮验证
+- `modules/virallab/app` build 通过
+
+### 第八十五轮增强：把主工作区按流程重排成单列
+- 对 ViralLab 主工作区做了一轮结构级重排，不再用难读的横向并列布局作为主视图。
+- 新布局改成从上到下的流程页：
+  1. 平台接入
+  2. 创建采集任务
+  3. 查看样本
+  4. 分析并提炼模式
+  5. 生成草稿
+- 把当前阶段不必要的信息降级或后移：
+  - 顶部工作流摘要和来源诊断不再抢首屏
+  - 高级调试信息被收进 `高级信息与调试`
+  - provider 对比类信息不再作为主阅读路径的一部分
+- 同时增加流程条、步骤编号、步骤说明，确保用户点击“创建任务”后知道接下来该看哪里。
+- 本轮也顺手清理了已经不再使用的 overview/provider 统计渲染逻辑。
+
+### 本轮验证
+- `modules/virallab/app` build 通过
+
+### 第八十六轮增强：交付前回归测试与文档收口
+- 对本轮 UI 重排后的 ViralLab 做了交付前测试，重点覆盖：
+  - 前端构建
+  - API 构建
+  - 健康检查
+  - 登录接口
+- 已验证：
+  - `modules/virallab/app` build 通过
+  - `modules/virallab/api` build 通过
+  - `GET /api/virallab/health` 返回 `ok: true`
+  - `POST /api/virallab/auth/login` 使用 demo 账号返回成功 token
+- 同步补齐并更新了：
+  - 开发日志
+  - 交接文档
+  - 中文用户手册
+  - 页面内帮助说明
+
 ### 第七十四轮增强：为 workflow 增加结论级 verdict
 - 本轮继续收口 workflow 诊断，把一组指标压缩成一个可直接读的结论层
 - `WorkflowService` 的 `diagnostics` 现在新增：
@@ -357,6 +425,37 @@
 ### 本轮验证
 - `modules/virallab/api` build 通过
 - `modules/virallab/app` build 通过
+
+### 第八十一轮增强：补充中文使用手册与 Cookie 指引
+- 新增中文使用手册：
+  - `docs/virallab_user_guide_zh.md`
+- 手册重点补齐了用户最容易卡住的真实采集环节：
+  - 什么是小红书 Cookie
+  - 如何通过浏览器开发者工具复制完整 Cookie
+  - 如何在 ViralLab 中保存与验证 Cookie
+  - Cookie 失效后的正确处理步骤
+  - 采集成果应该优先在哪些区域查看：
+    - `Collection Jobs`
+    - `Samples`
+- 同时补充了系统使用顺序、样本质量阅读方式、workflow 的常规使用方式和常见问题说明。
+
+### 第八十二轮增强：把使用说明和 Cookie 指引做进界面
+- 在 ViralLab 顶部头部新增两个可直接点击的帮助入口：
+  - `使用说明`
+  - `Cookie 指引`
+- 点击后会打开页面内帮助弹层，而不是让用户自己去找文档文件。
+- 当前弹层内容重点覆盖：
+  - 系统推荐使用顺序
+  - 采集成果应该去哪里看
+  - 如何跑完整 workflow
+  - 如何从浏览器拿到小红书 Cookie
+  - 如何在 ViralLab 中保存并验证 Cookie
+  - Cookie 失效后的恢复步骤
+- 这次改动的目标是把说明文档产品化，做成商用化风格的页面内帮助能力。
+
+### 本轮验证
+- `modules/virallab/app` build 通过
+- `modules/virallab/api` build 通过
 
 ### 第八十轮增强：取消左侧侧栏，改为顶部头部
 - 把 ViralLab 控制台原本的左侧品牌/导航区域改成了真正的顶部头部结构，不再长期占据左侧宽度。
