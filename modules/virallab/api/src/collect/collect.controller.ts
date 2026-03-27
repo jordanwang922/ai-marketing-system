@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Headers, Param, Post } from "@nestjs/common";
 import { CollectService } from "./collect.service";
 import {
+  CollectedSampleInput,
   CollectNoteType,
   CollectPublishWindow,
   CollectSortBy,
@@ -19,6 +20,7 @@ type CreateCollectJobDto = {
   providerId?: CollectorProviderId;
   manualSearchPageUrl?: string;
   manualSearchRequestData?: Record<string, unknown> | null;
+  prefetchedSamples?: CollectedSampleInput[] | null;
 };
 
 @Controller("collect")

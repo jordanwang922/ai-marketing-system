@@ -330,7 +330,7 @@ type WorkflowJob = {
   } | null;
 };
 
-const API_BASE = "http://localhost:3301/api/virallab";
+const API_BASE = "http://127.0.0.1:3301/api/virallab";
 const TOKEN_KEY = "virallab-token";
 const LOCALE_KEY = "virallab-locale";
 
@@ -1201,6 +1201,7 @@ export default function App() {
         body: JSON.stringify({
           sessionId: scanLoginSessionId,
           accountName: cookieForm.accountName,
+          targetCount: collectForm.targetCount,
         }),
       });
       if (!response?.verified) {
@@ -1226,6 +1227,7 @@ export default function App() {
           ? {
               manualSearchPageUrl: manualCapture.manualSearchPageUrl || undefined,
               manualSearchRequestData: manualCapture.manualSearchRequestData || null,
+              prefetchedSamples: Array.isArray(manualCapture.prefetchedSamples) ? manualCapture.prefetchedSamples : null,
             }
           : undefined,
       );
@@ -2186,10 +2188,10 @@ export default function App() {
                   </button>
                 </div>
                 {adPromptEditor === "system" ? (
-                  <label>
+                  <label className="prompt-editor-field">
                     System Prompt
                     <textarea
-                      rows={8}
+                      rows={18}
                       value={adDetectorConfig.systemPrompt}
                       onChange={(event) =>
                         setAdDetectorConfig((prev) => (prev ? { ...prev, systemPrompt: event.target.value } : prev))
@@ -2198,10 +2200,10 @@ export default function App() {
                   </label>
                 ) : null}
                 {adPromptEditor === "user" ? (
-                  <label>
+                  <label className="prompt-editor-field">
                     User Prompt
                     <textarea
-                      rows={10}
+                      rows={18}
                       value={adDetectorConfig.userPrompt}
                       onChange={(event) =>
                         setAdDetectorConfig((prev) => (prev ? { ...prev, userPrompt: event.target.value } : prev))

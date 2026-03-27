@@ -860,3 +860,18 @@ V1 implements the small red book workflow only:
   - current environment limitation:
     - live image generation requires `OPENAI_API_KEY`
     - if missing, API returns an explicit 400 message
+
+- Scan-first prefetch note:
+  - for the manual scan-first flow, the backend now supports capturing the current filtered Xiaohongshu result page before the scan window is closed
+  - implementation path:
+    - `platform.service.ts`
+    - `completeXiaohongshuScanLogin(...)`
+  - behavior:
+    - read current visible result cards from the active search page
+    - click cards one by one in the same browser session
+    - extract modal detail text, author, publish time, engagement counts, media refs
+    - return them as `prefetchedSamples`
+  - `collect.service.ts` now accepts `prefetchedSamples`
+    - if present, collection job uses these samples directly
+    - ad detector runs on real captured body text
+    - this avoids the weaker fallback where later worker runs only see search-summary content

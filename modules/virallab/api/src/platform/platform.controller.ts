@@ -37,7 +37,7 @@ export class PlatformController {
 
   @Post("xiaohongshu/scan-login/complete")
   completeXiaohongshuScanLogin(
-    @Body() body: { sessionId?: string; accountName?: string },
+    @Body() body: { sessionId?: string; accountName?: string; targetCount?: number },
     @Headers("authorization") authorization?: string,
   ) {
     const token = authorization?.replace(/^Bearer\s+/i, "").trim();

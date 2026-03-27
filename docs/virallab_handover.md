@@ -1345,3 +1345,25 @@ The frontend now has a working login flow and local token persistence. The defau
   - 广告识别器配置保存正常
   - Analyze / Pattern / Generate 链可继续跑通
   - Generate 已能返回配图建议
+
+- 2026-03-27 19:55 当前最重要的正文抓取修正：
+  - 旧问题：
+    - 扫码完成后虽然能创建任务，但后续 worker 重开搜索页补正文不稳定
+    - 结果常退化成“标题 + 搜索摘要”
+    - 广告识别器因此拿不到真正正文，容易误放过广告
+  - 新方案：
+    - 在 `scan-login/complete` 阶段直接使用当前扫码浏览器会话
+    - 从当前已筛好的结果页读取前 N 条卡片
+    - 逐条点击弹层，直接抓正文、作者、发布时间、互动数、媒体信息
+    - 以 `prefetchedSamples` 的形式传给 `/collect/jobs`
+    - collect 任务优先使用这批样本做广告识别与正式入库
+  - 这意味着：
+    - 扫码页里看到什么，就更接近抓什么
+    - 广告识别拿到的是正文，不再主要拿搜索摘要
+
+- 新链路自测：
+  - 已通过 API 构造 `prefetchedSamples` 做任务注入测试
+  - 结果：
+    - 广告样本被剔除
+    - 非广告样本成功进入正式样本库
+  - 可作为当前“扫码优先”模式的后端保底验证

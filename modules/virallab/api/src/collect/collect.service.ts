@@ -5,11 +5,13 @@ import { ViralLabCollectionJob, ViralLabPlatformAccount, ViralLabSample } from "
 import { MockCollector } from "./mock.collector";
 import { XiaohongshuCollector } from "./xiaohongshu.collector";
 import {
+  CollectedSampleInput,
   CollectNoteType,
   CollectPublishWindow,
   CollectSortBy,
   CollectorMode,
   CollectorProviderId,
+  CollectorRunResult,
   ViralLabCollectorProvider,
 } from "./collector.types";
 import { PrismaService } from "../prisma.service";
@@ -296,6 +298,108 @@ export class CollectService implements OnModuleInit {
         db.samples.unshift(sample);
       }
       return null;
+    });
+  }
+
+  private async applyCollectorResult(
+    job: ViralLabCollectionJob,
+    result: CollectorRunResult,
+    requestedCandidateCount: number,
+    adDetectorConfig: Awaited<ReturnType<AdDetectorService["getConfig"]>>,
+  ) {
+    const timestamp = this.getTimestamp();
+    const candidateSamples = result.samples.map((sample) => this.buildSample(job, timestamp, sample));
+    const acceptedSamples: ViralLabSample[] = [];
+    let rejectedAds = 0;
+
+    for (const sample of candidateSamples) {
+      const adDecision = await this.adDetectorService.detectSample(job.userId, sample);
+      if (adDecision.run.isAd) {
+        rejectedAds += 1;
+        continue;
+      }
+      acceptedSamples.push({
+        ...sample,
+        adDecisionStatus: "accepted",
+        adConfidence: adDecision.run.commercialIntentScore,
+        adDetectorRunId: adDecision.run.id,
+      });
+      if (acceptedSamples.length >= job.targetCount) {
+        break;
+      }
+    }
+
+    if (this.prisma.isEnabled() && acceptedSamples.length) {
+      await this.prisma.contentSample.createMany({
+        data: acceptedSamples.map((sample) => ({
+          id: sample.id,
+          jobId: sample.jobId,
+          userId: sample.userId,
+          platform: sample.platform,
+          collectorMode: sample.collectorMode,
+          keyword: sample.keyword,
+          platformContentId: sample.platformContentId,
+          title: sample.title,
+          contentText: sample.contentText,
+          contentSummary: sample.contentSummary,
+          rawPayloadJson: JSON.stringify(sample),
+          parsedPayloadJson: this.serializeSampleParsedPayload(sample),
+          authorName: sample.authorName,
+          authorId: sample.authorId,
+          publishTime: sample.publishTime ? new Date(sample.publishTime) : null,
+          likeCount: sample.likeCount,
+          commentCount: sample.commentCount,
+          collectCount: sample.collectCount,
+          shareCount: sample.shareCount,
+          tagsJson: JSON.stringify(sample.tags || []),
+          sourceUrl: sample.sourceUrl,
+          coverImageUrl: sample.coverImageUrl,
+          mediaImageUrlsJson: JSON.stringify(sample.mediaImageUrls || []),
+          mediaVideoUrlsJson: JSON.stringify(sample.mediaVideoUrls || []),
+          adDecisionStatus: sample.adDecisionStatus || null,
+          adConfidence: typeof sample.adConfidence === "number" ? sample.adConfidence : null,
+          adDetectorRunId: sample.adDetectorRunId || null,
+          status: sample.status,
+          createdAt: new Date(sample.createdAt),
+          updatedAt: new Date(sample.updatedAt),
+        })),
+      });
+    }
+
+    await this.syncSamplesToJson(acceptedSamples);
+
+    await this.updateCollectionJobRecord(job.id, (current) => {
+      current.status = result.status;
+      current.progress = result.status === "completed" ? 100 : result.progress;
+      current.finishedAt = result.status === "completed" || result.status === "failed" ? timestamp : null;
+      current.errorMessage = result.errorMessage || null;
+      current.metadataJson = JSON.stringify({
+        ...(result.metadata || {}),
+        requestedCandidateCount,
+        acceptedSampleCount: acceptedSamples.length,
+        rejectedAdCount: rejectedAds,
+        adThreshold: adDetectorConfig.threshold,
+        adDetectorEnabled: adDetectorConfig.enabled,
+      });
+      current.updatedAt = timestamp;
+      return current;
+    });
+
+    await this.appendAuditLog({
+      userId: job.userId,
+      action: result.status === "completed" ? "collection_job_completed" : "collection_job_failed",
+      targetType: "collection_job",
+      targetId: job.id,
+      payloadJson: JSON.stringify({
+        keyword: job.keyword,
+        targetCount: job.targetCount,
+        collectorMode: job.collectorMode,
+        status: result.status,
+        createdSamples: acceptedSamples.length,
+        rejectedAds,
+        reason: result.metadata?.reason || null,
+      }),
+      createdAt: timestamp,
     });
   }
 
@@ -675,102 +779,7 @@ export class CollectService implements OnModuleInit {
         },
       );
 
-      const timestamp = this.getTimestamp();
-      const candidateSamples = result.samples.map((sample) => this.buildSample(job, timestamp, sample));
-      const acceptedSamples: ViralLabSample[] = [];
-      let rejectedAds = 0;
-
-      for (const sample of candidateSamples) {
-        const adDecision = await this.adDetectorService.detectSample(job.userId, sample);
-        if (adDecision.run.isAd) {
-          rejectedAds += 1;
-          continue;
-        }
-        acceptedSamples.push({
-          ...sample,
-          adDecisionStatus: "accepted",
-          adConfidence: adDecision.run.commercialIntentScore,
-          adDetectorRunId: adDecision.run.id,
-        });
-        if (acceptedSamples.length >= job.targetCount) {
-          break;
-        }
-      }
-
-      const createdSamples = acceptedSamples;
-
-      if (this.prisma.isEnabled() && createdSamples.length) {
-        await this.prisma.contentSample.createMany({
-          data: createdSamples.map((sample) => ({
-            id: sample.id,
-            jobId: sample.jobId,
-            userId: sample.userId,
-            platform: sample.platform,
-            collectorMode: sample.collectorMode,
-            keyword: sample.keyword,
-            platformContentId: sample.platformContentId,
-            title: sample.title,
-            contentText: sample.contentText,
-            contentSummary: sample.contentSummary,
-            rawPayloadJson: JSON.stringify(sample),
-            parsedPayloadJson: this.serializeSampleParsedPayload(sample),
-            authorName: sample.authorName,
-            authorId: sample.authorId,
-            publishTime: sample.publishTime ? new Date(sample.publishTime) : null,
-            likeCount: sample.likeCount,
-            commentCount: sample.commentCount,
-            collectCount: sample.collectCount,
-            shareCount: sample.shareCount,
-            tagsJson: JSON.stringify(sample.tags || []),
-            sourceUrl: sample.sourceUrl,
-            coverImageUrl: sample.coverImageUrl,
-            mediaImageUrlsJson: JSON.stringify(sample.mediaImageUrls || []),
-            mediaVideoUrlsJson: JSON.stringify(sample.mediaVideoUrls || []),
-            adDecisionStatus: sample.adDecisionStatus || null,
-            adConfidence: typeof sample.adConfidence === "number" ? sample.adConfidence : null,
-            adDetectorRunId: sample.adDetectorRunId || null,
-            status: sample.status,
-            createdAt: new Date(sample.createdAt),
-            updatedAt: new Date(sample.updatedAt),
-          })),
-        });
-      }
-
-      await this.syncSamplesToJson(createdSamples);
-
-      await this.updateCollectionJobRecord(jobId, (current) => {
-        current.status = result.status;
-        current.progress = result.status === "completed" ? 100 : result.progress;
-        current.finishedAt = result.status === "completed" || result.status === "failed" ? timestamp : null;
-        current.errorMessage = result.errorMessage || null;
-        current.metadataJson = JSON.stringify({
-          ...(result.metadata || {}),
-          requestedCandidateCount: expandedTargetCount,
-          acceptedSampleCount: createdSamples.length,
-          rejectedAdCount: rejectedAds,
-          adThreshold: adDetectorConfig.threshold,
-          adDetectorEnabled: adDetectorConfig.enabled,
-        });
-        current.updatedAt = timestamp;
-        return current;
-      });
-
-      await this.appendAuditLog({
-        userId: job.userId,
-        action: result.status === "completed" ? "collection_job_completed" : "collection_job_failed",
-        targetType: "collection_job",
-        targetId: job.id,
-        payloadJson: JSON.stringify({
-          keyword: job.keyword,
-          targetCount: job.targetCount,
-          collectorMode: job.collectorMode,
-          status: result.status,
-          createdSamples: createdSamples.length,
-          rejectedAds,
-          reason: result.metadata?.reason || null,
-        }),
-        createdAt: timestamp,
-      });
+      await this.applyCollectorResult(job, result, expandedTargetCount, adDetectorConfig);
     } catch (error) {
       const timestamp = this.getTimestamp();
       const failedJob = await this.updateCollectionJobRecord(jobId, (current) => {
@@ -824,6 +833,7 @@ export class CollectService implements OnModuleInit {
     token?: string;
     manualSearchPageUrl?: string;
     manualSearchRequestData?: Record<string, unknown> | null;
+    prefetchedSamples?: CollectedSampleInput[] | null;
   }) {
     const userId = await this.resolveUserId(payload.token);
     const collectorMode = payload.collectorMode || "mock";
@@ -929,6 +939,7 @@ export class CollectService implements OnModuleInit {
             !Array.isArray(payload.manualSearchRequestData)
               ? payload.manualSearchRequestData
               : null,
+          prefetchedSampleCount: Array.isArray(payload.prefetchedSamples) ? payload.prefetchedSamples.length : 0,
         },
       ),
       createdAt: timestamp,
@@ -961,8 +972,50 @@ export class CollectService implements OnModuleInit {
       errorMessage: null,
     };
 
+    const prefetchedSamples = Array.isArray(payload.prefetchedSamples)
+      ? (payload.prefetchedSamples.filter((item) => item && typeof item === "object") as CollectedSampleInput[])
+      : [];
+
     setTimeout(() => {
-      void this.runCollectorJob(queued.jobId);
+      if (!prefetchedSamples.length) {
+        void this.runCollectorJob(queued.jobId);
+        return;
+      }
+
+      void (async () => {
+        const adDetectorConfig = await this.adDetectorService.getConfig(job.userId);
+        await this.updateCollectionJobRecord(job.id, (current) => {
+          const timestamp = this.getTimestamp();
+          current.status = "running";
+          current.progress = 60;
+          current.startedAt = current.startedAt || timestamp;
+          current.updatedAt = timestamp;
+          current.metadataJson = JSON.stringify({
+            ...(this.parseMetadata(current.metadataJson) || {}),
+            progressStage: "using-prefetched-samples",
+            progressMessage: "正在整理当前扫码页抓到的正文",
+            extractedCount: prefetchedSamples.length,
+            targetCount: job.targetCount,
+          });
+          return current;
+        });
+        const result: CollectorRunResult = {
+          mode: job.collectorMode,
+          status: "completed",
+          progress: 100,
+          metadata: {
+            provider: provider.id,
+            providerMode: provider.mode,
+            reason: "prefetched-from-scan-session",
+            ready: true,
+          },
+          errorMessage: null,
+          samples: prefetchedSamples,
+        };
+        await this.applyCollectorResult(job, result, prefetchedSamples.length, adDetectorConfig);
+      })().catch(() => {
+        void this.runCollectorJob(queued.jobId);
+      });
     }, 0);
 
     return queued;

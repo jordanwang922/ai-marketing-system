@@ -28,6 +28,7 @@ export type CollectRequest = {
   targetCount: number;
   manualSearchPageUrl?: string;
   manualSearchRequestData?: Record<string, unknown> | null;
+  prefetchedSamples?: CollectedSampleInput[] | null;
 };
 
 export type CollectorContext = {

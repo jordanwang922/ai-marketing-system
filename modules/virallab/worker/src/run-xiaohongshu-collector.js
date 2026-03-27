@@ -14,6 +14,7 @@ const __dirname = path.dirname(__filename);
 const ARTIFACTS_DIR = path.resolve(__dirname, "../artifacts");
 const VISION_OCR_RUNNER = path.resolve(__dirname, "./vision-ocr.swift");
 const VERIFY_LOGIN_TEXT = "登录后查看搜索结果";
+const IMAGE_OCR_BODY_LENGTH_THRESHOLD = 220;
 const execFileAsync = promisify(execFile);
 const PROGRESS_FILE_PATH =
   typeof payload.progressFilePath === "string" && payload.progressFilePath.trim()
@@ -33,6 +34,17 @@ const withTimeout = async (promise, ms, fallbackValue) => {
     ]);
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
+  }
+};
+
+const withTimeoutOrFallback = async (promiseOrFactory, ms, fallbackValue, onError) => {
+  try {
+    const promise =
+      typeof promiseOrFactory === "function" ? promiseOrFactory() : promiseOrFactory;
+    return await withTimeout(Promise.resolve(promise), ms, fallbackValue);
+  } catch (error) {
+    onError?.(error);
+    return fallbackValue;
   }
 };
 
@@ -2252,11 +2264,12 @@ const enrichSamplesWithImageOcr = async (samples = []) => {
       totalCount: totalSamples,
     });
     const draft = finalizeResolvedContent(sample);
+    const bodyTextLength = text(draft.contentText).length;
     const shouldOcr =
       draft.contentType === "image" &&
       Array.isArray(draft.mediaImageUrls) &&
       draft.mediaImageUrls.length >= 1 &&
-      text(draft.contentText).length < 220;
+      bodyTextLength < IMAGE_OCR_BODY_LENGTH_THRESHOLD;
 
     if (!shouldOcr) {
       enriched.push(draft);
@@ -3074,6 +3087,7 @@ const run = async () => {
   const networkPayloads = [];
   let searchFilterConfig = null;
   let appliedSearchFilters = null;
+  const optionalWarnings = [];
   const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
 
   try {
@@ -3288,8 +3302,8 @@ const run = async () => {
       return;
     }
 
-    const modalEnrichment = await withTimeout(
-      enrichSamplesFromSearchModal(page, initialSamples, keyword),
+    const modalEnrichment = await withTimeoutOrFallback(
+      () => enrichSamplesFromSearchModal(page, initialSamples, keyword),
       45000,
       {
         samples: initialSamples,
@@ -3302,11 +3316,23 @@ const run = async () => {
           detailEnrichedCount: 0,
         },
       },
+      (error) => {
+        optionalWarnings.push({
+          stage: "modal-enrichment",
+          message: error instanceof Error ? error.message : "unknown-modal-enrichment-error",
+        });
+      },
     );
-    const notePageEnriched = await withTimeout(
-      enrichSamplesFromNotePages(context, modalEnrichment.samples, keyword),
+    const notePageEnriched = await withTimeoutOrFallback(
+      () => enrichSamplesFromNotePages(context, modalEnrichment.samples, keyword),
       30000,
       modalEnrichment.samples,
+      (error) => {
+        optionalWarnings.push({
+          stage: "note-page-enrichment",
+          message: error instanceof Error ? error.message : "unknown-note-page-enrichment-error",
+        });
+      },
     );
     await writeProgress({
       progress: 76,
@@ -3315,8 +3341,8 @@ const run = async () => {
       extractedCount: Math.min(notePageEnriched.length, targetCount),
       totalCount: targetCount,
     });
-    const imageOcrEnrichment = await withTimeout(
-      enrichSamplesWithImageOcr(notePageEnriched),
+    const imageOcrEnrichment = await withTimeoutOrFallback(
+      () => enrichSamplesWithImageOcr(notePageEnriched),
       25000,
       {
         samples: notePageEnriched,
@@ -3327,6 +3353,12 @@ const run = async () => {
           longImageDetectedCount: 0,
           imageOcrCount: 0,
         },
+      },
+      (error) => {
+        optionalWarnings.push({
+          stage: "image-ocr",
+          message: error instanceof Error ? error.message : "unknown-image-ocr-error",
+        });
       },
     );
     const finalizedSamples = imageOcrEnrichment.samples.map((sample) => finalizeResolvedContent(sample));
@@ -3364,12 +3396,18 @@ const run = async () => {
       );
       return;
     }
-    const detailApiProbe = await withTimeout(
-      probeDetailApiCandidates(context, payload.cookieBlob, filteredSamples, keyword),
+    const detailApiProbe = await withTimeoutOrFallback(
+      () => probeDetailApiCandidates(context, payload.cookieBlob, filteredSamples, keyword),
       12000,
       {
         timedOut: true,
         reason: "detail-api-probe-timeout",
+      },
+      (error) => {
+        optionalWarnings.push({
+          stage: "detail-api-probe",
+          message: error instanceof Error ? error.message : "unknown-detail-api-probe-error",
+        });
       },
     );
     const detailEnrichedCount = filteredSamples.filter(
@@ -3411,6 +3449,7 @@ const run = async () => {
           detailEnrichedCount,
           contentTypeCounts,
           detailApiProbe,
+          optionalWarnings,
           diagnostics,
           artifacts,
           progressStage: "completed",

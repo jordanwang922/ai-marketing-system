@@ -2963,3 +2963,17 @@
 - `POST /generate/contents/:contentId/images` 在缺少 `OPENAI_API_KEY` 时返回清晰的 400 提示
 - `node --check modules/virallab/worker/src/run-xiaohongshu-collector.js` 通过
 - 直接调用 `scan-login/start` 成功，确认当前 API 返回小红书首页入口
+
+- 2026-03-27 19:55 修正扫码优先流程中的正文抓取主路径：
+  - 不再让当前扫码页的结果只依赖后续 worker 重开搜索页再补正文
+  - 在 `scan-login/complete` 阶段直接从用户当前停留的小红书结果页抓取前 N 条卡片，并逐条点开弹层抽取正文
+  - 抽到的正文样本作为 `prefetchedSamples` 直接带入任务创建
+  - 任务创建时如果存在 `prefetchedSamples`，会优先使用这批真实正文样本进入广告识别与正式入库
+  - 这样可以显著减少“只抓到标题/搜索摘要、广告识别拿不到正文”的问题
+
+- 2026-03-27 19:58 自测结果：
+  - 用 1 条明显广告正文 + 1 条非广告正文做 `prefetchedSamples` 任务注入测试
+  - 任务 `job_854f74fe` 成功完成
+  - 广告样本被识别并剔除：`rejectedAdCount = 1`
+  - 非广告样本进入正式样本库：`acceptedSampleCount = 1`
+  - 说明“当前页抓正文 -> 广告识别 -> 非广告入库”这条新链已打通
