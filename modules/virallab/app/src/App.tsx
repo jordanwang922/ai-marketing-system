@@ -24,6 +24,7 @@ type Job = {
   keyword: string;
   status: string;
   progress: number;
+  createdAt?: string;
   targetCount: number;
   sortBy: string;
   noteType?: string;
@@ -37,6 +38,10 @@ type Job = {
     progressStage?: string;
     progressMessage?: string;
     targetCount?: number;
+    acceptedSampleCount?: number;
+    rejectedAdCount?: number;
+    adThreshold?: number;
+    adDetectorEnabled?: boolean;
     rawItemCount?: number;
     normalizedItemCount?: number;
     fallbackItemCount?: number;
@@ -136,10 +141,56 @@ type GeneratedContent = {
   coverCopy: string;
   tags: string[];
   generationNotes: string;
+  imageSuggestions: Array<{
+    id: string;
+    order: number;
+    title: string;
+    description: string;
+    prompt: string;
+    visualStyle: string;
+    aspectRatio: string;
+  }>;
+  imageAssets: Array<{
+    id: string;
+    suggestionId: string;
+    status: "ready" | "failed";
+    prompt: string;
+    imageUrl: string | null;
+    localPath: string | null;
+    errorMessage: string | null;
+  }>;
   modelName: string;
   promptVersion: string;
   fallbackStatus: "llm" | "local-fallback" | "local-only";
   fallbackReason?: string | null;
+};
+
+type AdDetectorConfig = {
+  id: string;
+  enabled: boolean;
+  threshold: number;
+  systemPrompt: string;
+  userPrompt: string;
+  updatedAt: string;
+};
+
+type AdLibraryItem = {
+  id: string;
+  sampleId: string | null;
+  title: string;
+  authorName: string;
+  publishTime: string;
+  sourceUrl: string;
+  confidence: number;
+  commercialIntentScore: number;
+  adType: string;
+  reasoning: string;
+  adSignals: string[];
+  brandNames: string[];
+  productNames: string[];
+  institutionNames: string[];
+  serviceNames: string[];
+  createdAt: string;
 };
 
 type User = {
@@ -351,6 +402,32 @@ const formatPublishDate = (value: string | undefined) => {
   return date.toISOString().slice(0, 10);
 };
 
+const formatDateTime = (value: string | undefined, locale: Locale) => {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en-US", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+};
+
+const extractReadableErrorMessage = (error: unknown, fallback: string) => {
+  if (!(error instanceof Error)) return fallback;
+  const raw = String(error.message || "").trim();
+  if (!raw) return fallback;
+  try {
+    const parsed = JSON.parse(raw) as { message?: string };
+    return String(parsed?.message || raw);
+  } catch {
+    return raw;
+  }
+};
+
 const inferSampleType = (sample: Sample): "image" | "video" => {
   if (sample.contentType === "image" || sample.contentType === "video") return sample.contentType;
   if (sample.hasVideoMedia || (sample.mediaVideoUrls?.length || 0) > 0) return "video";
@@ -433,6 +510,8 @@ export default function App() {
   const [analyses, setAnalyses] = useState<Analysis[]>([]);
   const [patterns, setPatterns] = useState<Pattern[]>([]);
   const [generated, setGenerated] = useState<GeneratedContent | null>(null);
+  const [adDetectorConfig, setAdDetectorConfig] = useState<AdDetectorConfig | null>(null);
+  const [adLibraryItems, setAdLibraryItems] = useState<AdLibraryItem[]>([]);
   const [platformAccounts, setPlatformAccounts] = useState<PlatformAccount[]>([]);
   const [capabilities, setCapabilities] = useState<CollectorCapabilities | null>(null);
   const [debugSummary, setDebugSummary] = useState<DebugSummary | null>(null);
@@ -441,17 +520,17 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [workspaceMessage, setWorkspaceMessage] = useState("");
   const [collectForm, setCollectForm] = useState({
-    keyword: "AI教育",
+    keyword: "",
     sortBy: "hot",
     noteType: "all",
     publishWindow: "all",
-    targetCount: 12,
+    targetCount: 10,
     collectorMode: "mock" as "mock" | "real",
     providerId: "mock-local",
   });
   const [generateForm, setGenerateForm] = useState({
     patternId: "",
-    topic: "AI教育内容选题",
+    topic: "教育内容选题",
     goal: "生成一篇适合教育博主发布的小红书图文",
     tone: "专业但通俗",
     targetAudience: "老师和家长",
@@ -471,6 +550,7 @@ export default function App() {
   const [activeCollectionJobId, setActiveCollectionJobId] = useState<string>("");
   const [focusCurrentCollectionRun, setFocusCurrentCollectionRun] = useState(false);
   const [helpTab, setHelpTab] = useState<HelpTab | null>(null);
+  const [adPromptEditor, setAdPromptEditor] = useState<"system" | "user" | null>(null);
   const t = (zh: string, en: string) => (locale === "zh" ? zh : en);
 
   useEffect(() => {
@@ -499,6 +579,16 @@ export default function App() {
     }
     return jobs[0] || null;
   }, [activeCollectionJobId, focusCurrentCollectionRun, jobs]);
+  const visibleJobs = useMemo(() => {
+    if (activeCollectionJobId) {
+      const currentJob = jobs.find((item) => item.id === activeCollectionJobId);
+      return currentJob ? [currentJob] : [];
+    }
+    if (focusCurrentCollectionRun) {
+      return [];
+    }
+    return jobs.slice(0, 3);
+  }, [activeCollectionJobId, focusCurrentCollectionRun, jobs]);
   const currentJobSamples = useMemo(() => {
     if (!latestCollectionJob?.id) return [];
     return samples.filter((item) => item.jobId === latestCollectionJob.id);
@@ -507,8 +597,11 @@ export default function App() {
     if (latestCollectionJob?.id) {
       return currentJobSamples.slice(0, 10);
     }
+    if (focusCurrentCollectionRun) {
+      return [];
+    }
     return samples.slice(0, 10);
-  }, [currentJobSamples, latestCollectionJob, samples]);
+  }, [currentJobSamples, focusCurrentCollectionRun, latestCollectionJob, samples]);
   const selectedSampleIds = useMemo(() => visibleSamples.slice(0, 5).map((item) => item.id), [visibleSamples]);
   const selectedAnalysisIds = useMemo(() => analyses.slice(0, 4).map((item) => item.id), [analyses]);
   const sampleQualityStats = useMemo(() => {
@@ -544,6 +637,19 @@ export default function App() {
     };
   }, [visibleSamples]);
   const collectionNextStep = useMemo(() => {
+    if (focusCurrentCollectionRun && !latestCollectionJob) {
+      return {
+        title: t("这次扫码流程还没成功创建任务", "This scan flow has not created a job yet"),
+        body: t(
+          "如果你已经点了“扫码完成并开始抓取”，但这里还没有出现新任务，说明这一次流程还没有真正创建出任务。请先看上方错误提示，再决定是否重新扫码。",
+          "If you already clicked “Scan Complete & Start Collection” but no new job appears here, this run did not create a job yet. Check the error message above before retrying.",
+        ),
+        actions: [
+          { href: "#access", label: t("回到扫码区", "Back to scan section") },
+          { href: "#samples", label: t("样本区暂不参考", "Ignore Samples for now") },
+        ],
+      };
+    }
     if (!latestCollectionJob) {
       return {
         title: t("开始抓取后下一步怎么做", "What to do after starting collection"),
@@ -595,7 +701,7 @@ export default function App() {
         { href: "#overview", label: t("回到总览", "Back to Overview") },
       ],
     };
-  }, [latestCollectionJob, locale]);
+  }, [focusCurrentCollectionRun, latestCollectionJob, locale]);
   const collectionStageModel = useMemo(() => {
     const completedCount = latestCollectionJob?.metadata?.extractedCount || 0;
     const targetCount = latestCollectionJob?.targetCount || collectForm.targetCount || 10;
@@ -831,13 +937,20 @@ export default function App() {
     const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(text || `Request failed: ${response.status}`);
+      let parsedMessage = "";
+      try {
+        const parsed = JSON.parse(text) as { message?: string };
+        parsedMessage = parsed?.message || "";
+      } catch {
+        parsedMessage = "";
+      }
+      throw new Error(parsedMessage || text || `Request failed: ${response.status}`);
     }
     return response.json();
   };
 
   const refreshAll = async () => {
-    const [debugRes, meRes, overviewRes, jobsRes, workflowJobsRes, samplesRes, analysesRes, patternsRes, accountsRes, capabilitiesRes] = await Promise.all([
+    const [debugRes, meRes, overviewRes, jobsRes, workflowJobsRes, samplesRes, analysesRes, patternsRes, accountsRes, capabilitiesRes, adConfigRes, adLibraryRes] = await Promise.all([
       apiFetch("/collect/debug-summary"),
       apiFetch("/auth/me"),
       apiFetch("/overview"),
@@ -848,6 +961,8 @@ export default function App() {
       apiFetch("/patterns"),
       apiFetch("/platform-accounts"),
       apiFetch("/collect/capabilities"),
+      apiFetch("/ad-detector/config"),
+      apiFetch("/ad-detector/library"),
     ]);
 
     setDebugSummary((debugRes as { item?: DebugSummary }).item || null);
@@ -860,6 +975,8 @@ export default function App() {
     setPatterns((patternsRes as { items?: Pattern[] }).items || []);
     setPlatformAccounts((accountsRes as { items?: PlatformAccount[] }).items || []);
     setCapabilities((capabilitiesRes as { items?: CollectorCapabilities }).items || null);
+    setAdDetectorConfig((adConfigRes as { item?: AdDetectorConfig }).item || null);
+    setAdLibraryItems((adLibraryRes as { items?: AdLibraryItem[] }).items || []);
     setGenerateForm((prev) => ({
       ...prev,
       patternId: prev.patternId || (patternsRes as { items?: Pattern[] }).items?.[0]?.id || "",
@@ -1032,12 +1149,12 @@ export default function App() {
       ...prev,
       collectorMode: "real",
       providerId: "xiaohongshu-playwright",
-      keyword: prev.keyword?.trim() ? prev.keyword : "AI教育",
     }));
     setLoading(true);
     setActiveCollectionJobId("");
     setFocusCurrentCollectionRun(true);
     setScanWorkflowStage("scan-window-open");
+    setWorkspaceMessage("");
     setWorkspaceMessage(
       t(
         "正在打开小红书扫码窗口，请稍等几秒；如果浏览器被挡住，请留意桌面上是否有新的浏览器窗口弹出。",
@@ -1047,7 +1164,7 @@ export default function App() {
     try {
       const response = await apiFetch("/platform-accounts/xiaohongshu/scan-login/start", {
         method: "POST",
-        body: JSON.stringify({ accountName: cookieForm.accountName, keyword: collectForm.keyword }),
+        body: JSON.stringify({ accountName: cookieForm.accountName }),
       });
       setScanLoginSessionId(response?.sessionId || "");
       setScanLoginStatus("waiting");
@@ -1061,7 +1178,12 @@ export default function App() {
     } catch (error) {
       setScanWorkflowStage("idle");
       setFocusCurrentCollectionRun(false);
-      setWorkspaceMessage(error instanceof Error ? error.message : t("打开扫码窗口失败。", "Unable to open the scan window."));
+      setWorkspaceMessage(
+        extractReadableErrorMessage(
+          error,
+          t("打开扫码窗口失败。", "Unable to open the scan window."),
+        ),
+      );
     } finally {
       setLoading(false);
     }
@@ -1072,6 +1194,7 @@ export default function App() {
     setLoading(true);
     setScanLoginStatus("capturing");
     setScanWorkflowStage("capturing-session");
+    setWorkspaceMessage("");
     try {
       const response = await apiFetch("/platform-accounts/xiaohongshu/scan-login/complete", {
         method: "POST",
@@ -1089,14 +1212,16 @@ export default function App() {
       setScanLoginSessionId("");
       setScanLoginStatus("idle");
       setScanWorkflowStage("creating-job");
-      await refreshAll();
+      await refreshAll().catch((error) => {
+        console.warn("refreshAll after scan completion failed", error);
+      });
       const manualCapture =
         response?.metadata?.manualCapture &&
         typeof response.metadata.manualCapture === "object" &&
         !Array.isArray(response.metadata.manualCapture)
           ? response.metadata.manualCapture
           : null;
-      await submitCollectJob(
+      const createdJob = await submitCollectJob(
         manualCapture
           ? {
               manualSearchPageUrl: manualCapture.manualSearchPageUrl || undefined,
@@ -1104,6 +1229,12 @@ export default function App() {
             }
           : undefined,
       );
+      if (!createdJob?.jobId) {
+        throw new Error(
+          createdJob?.errorMessage ||
+            t("系统没有成功创建新的抓取任务，请重新打开扫码窗口再试。", "A new collection job was not created successfully. Reopen the scan window and try again."),
+        );
+      }
       await apiFetch("/platform-accounts/xiaohongshu/scan-login/cancel", {
         method: "POST",
         body: JSON.stringify({ sessionId: scanLoginSessionId }),
@@ -1117,11 +1248,20 @@ export default function App() {
         ),
       );
     } catch (error) {
-      setScanWorkflowStage("scan-window-open");
+      const rawMessage = extractReadableErrorMessage(
+        error,
+        t("扫码完成后的自动接管失败。", "Unable to complete scan login and start collection."),
+      );
+      const message =
+        rawMessage.includes("Internal server error")
+          ? t(
+              "系统在接管扫码结果时发生内部错误，请不要关闭小红书窗口，稍后再点一次“扫码完成并开始抓取”。",
+              "The system hit an internal error while taking over the scanned Xiaohongshu session. Keep the Xiaohongshu window open and try “Scan Complete & Start Collection” again.",
+            )
+          : rawMessage;
+      setScanWorkflowStage("job-failed");
       setWorkspaceMessage(
-        error instanceof Error
-          ? `${error.message} ${t("扫码窗口已保留，你可以继续在原窗口调整后再点一次“扫码完成并开始抓取”。", "The scan window stays open so you can keep adjusting and click “Scan Complete & Start Collection” again.")}`
-          : t("扫码完成后的自动接管失败。", "Unable to complete scan login and start collection."),
+        `${message} ${t("扫码窗口已保留，你可以继续在原窗口调整后再点一次“扫码完成并开始抓取”。", "The scan window stays open so you can keep adjusting and click “Scan Complete & Start Collection” again.")}`,
       );
     } finally {
       setLoading(false);
@@ -1198,6 +1338,49 @@ export default function App() {
       await refreshAll();
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : t("生成草稿失败。", "Unable to generate draft."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSaveAdDetectorConfig = async () => {
+    if (!adDetectorConfig) return;
+    setLoading(true);
+    try {
+      const response = await apiFetch("/ad-detector/config", {
+        method: "PUT",
+        body: JSON.stringify({
+          enabled: adDetectorConfig.enabled,
+          threshold: adDetectorConfig.threshold,
+          systemPrompt: adDetectorConfig.systemPrompt,
+          userPrompt: adDetectorConfig.userPrompt,
+        }),
+      });
+      setAdDetectorConfig((response as { item?: AdDetectorConfig }).item || adDetectorConfig);
+      setWorkspaceMessage(t("广告识别器配置已保存。", "Ad detector config saved."));
+      setAdPromptEditor(null);
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : t("保存广告识别器配置失败。", "Unable to save ad detector config."));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGenerateImage = async (suggestionId: string) => {
+    if (!generated) return;
+    setLoading(true);
+    try {
+      const response = await apiFetch(`/generate/contents/${generated.id}/images`, {
+        method: "POST",
+        body: JSON.stringify({ suggestionId }),
+      });
+      const item = (response as { item?: GeneratedContent }).item || null;
+      if (item) {
+        setGenerated(item);
+      }
+      setWorkspaceMessage(t("AI 图片已生成。", "AI image generated."));
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : t("生成 AI 图片失败。", "Unable to generate AI image."));
     } finally {
       setLoading(false);
     }
@@ -1455,17 +1638,31 @@ export default function App() {
               <strong>{t("扫码自动接管", "Scan login auto-capture")}</strong>
               <p className="step-copy">
                 {t(
-                  "点“打开小红书扫码窗口”后，请在小红书窗口里完成扫码，并亲手筛好图文/视频、排序、发布时间。确认当前页就是你想抓的结果后，再回来点“扫码完成并开始抓取”。",
-                  "After opening the Xiaohongshu scan window, finish login and manually choose note type, sort, and publish time. Once the results page matches what you want, return here and click “Scan Complete & Start Collection”.",
+                  "点“打开小红书扫码窗口”后，请在小红书窗口里完成扫码，并亲手搜索关键词、筛好图文/视频、排序、发布时间。确认当前页就是你想抓的结果后，再回来点“扫码完成并开始抓取”。",
+                  "After opening the Xiaohongshu scan window, finish login and manually search the keyword, choose note type, sort, and publish time. Once the results page matches what you want, return here and click “Scan Complete & Start Collection”.",
                 )}
               </p>
-              <label>
-                {t("账号名称", "Account name")}
-                <input
-                  value={cookieForm.accountName}
-                  onChange={(event) => setCookieForm((prev) => ({ ...prev, accountName: event.target.value }))}
-                />
-              </label>
+              <div className="scan-setup-grid">
+                <label>
+                  {t("账号名称", "Account name")}
+                  <input
+                    value={cookieForm.accountName}
+                    onChange={(event) => setCookieForm((prev) => ({ ...prev, accountName: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  {t("抓取数量", "Target count")}
+                  <input
+                    type="number"
+                    min={5}
+                    max={50}
+                    value={collectForm.targetCount}
+                    onChange={(event) =>
+                      setCollectForm((prev) => ({ ...prev, targetCount: Number(event.target.value || 10) }))
+                    }
+                  />
+                </label>
+              </div>
               <div className="action-row">
                 <button
                   disabled={loading || scanLoginStatus !== "idle"}
@@ -1496,7 +1693,7 @@ export default function App() {
               </div>
               <p className="hint-text">
                 {scanLoginSessionId
-                  ? t("扫码窗口打开后，不用回来填表。先在小红书里把筛选条件全部调好，再回来点击“扫码完成并开始抓取”。", "Once the scan window opens, do not fill forms here. Finish all filtering inside Xiaohongshu first, then return and click “Scan Complete & Start Collection”.")
+                  ? t("扫码窗口打开后，不用回来填关键词。先在小红书里自己搜关键词，并把筛选条件全部调好，再回来点击“扫码完成并开始抓取”。", "Once the scan window opens, do not fill keywords here. Search inside Xiaohongshu yourself, finish the filters there, then return and click “Scan Complete & Start Collection”.")
                   : t("推荐主流程：扫码 -> 在小红书里筛选 -> 回来点击开始抓取。", "Recommended flow: scan -> filter in Xiaohongshu -> return and start collection.")}
               </p>
               {workspaceMessage ? <p className="status-note">{workspaceMessage}</p> : null}
@@ -1574,6 +1771,7 @@ export default function App() {
                 <div className="pattern-meta">
                   <span>{t("任务进度", "Task progress")}：{collectionStageModel.progress}%</span>
                   {latestCollectionJob?.id ? <span>{t("当前任务", "Current job")}：{latestCollectionJob.id}</span> : null}
+                  {latestCollectionJob?.createdAt ? <span>{t("创建时间", "Created")}：{formatDateTime(latestCollectionJob.createdAt, locale)}</span> : null}
                 </div>
               </div>
             </div>
@@ -1699,11 +1897,28 @@ export default function App() {
               </form>
             </details>
             <div className="table-list">
-              {jobs.slice(0, 3).map((job) => (
+              {focusCurrentCollectionRun && !visibleJobs.length ? (
+                <div className="table-row">
+                  <div>
+                    <strong>{t("正在等待这一次的新任务", "Waiting for the new job from this run")}</strong>
+                    <span>{t("历史任务已隐藏，避免干扰当前扫码流程。", "Historical jobs are hidden to avoid interfering with this scan-first run.")}</span>
+                  </div>
+                  <div>
+                    <strong>{t("还没有新任务", "No new job yet")}</strong>
+                    <span>{t("如果长时间没有出现，请看上方错误提示。", "If nothing appears for a while, check the error message above.")}</span>
+                  </div>
+                  <div>
+                    <strong>--</strong>
+                    <span>{t("等待创建", "Waiting for creation")}</span>
+                  </div>
+                </div>
+              ) : null}
+              {visibleJobs.map((job) => (
                 <div className="table-row" key={job.id}>
                   <div>
                     <strong>{job.keyword}</strong>
                     <span>{job.id}</span>
+                    <span>{t("创建时间", "Created")}：{formatDateTime(job.createdAt, locale)}</span>
                   </div>
                   <div>
                     <strong>{job.targetCount} {t("条样本", "samples")}</strong>
@@ -1726,6 +1941,15 @@ export default function App() {
                     ) : job.metadata?.extractedCount ? (
                       <span>
                         {t("已提取", "extracted")} {job.metadata.extractedCount} {t("条，来源", "via")} {job.metadata.extractedFrom || t("未知", "unknown")}
+                      </span>
+                    ) : null}
+                    {typeof job.metadata?.acceptedSampleCount === "number" || typeof job.metadata?.rejectedAdCount === "number" ? (
+                      <span>
+                        {t("有效样本", "accepted")} {job.metadata?.acceptedSampleCount || 0}
+                        {" · "}
+                        {t("广告剔除", "ads filtered")} {job.metadata?.rejectedAdCount || 0}
+                        {" · "}
+                        {t("阈值", "threshold")} {job.metadata?.adThreshold || "--"}%
                       </span>
                     ) : null}
                     {job.metadata?.appliedSearchFilters ? (
@@ -1899,10 +2123,129 @@ export default function App() {
             </div>
           </article>
 
-          <article className="panel" id="analyze">
+          <article className="panel" id="ad-detector">
             <div className="panel-head">
               <div className="step-head">
                 <div className="step-index">4</div>
+                <div>
+                  <h3>{t("广告识别器", "Ad Detector")}</h3>
+                  <p className="step-copy">
+                    {t(
+                      "广告识别在样本进入分析前执行。广告样本不会计入本次有效样本数，而是进入广告库，方便后续做竞争情报分析。",
+                      "Ad detection runs before analysis. Ad samples do not count toward effective samples and go into the ad library for later competitor intelligence.",
+                    )}
+                  </p>
+                </div>
+              </div>
+              <span className="pill">{t("广告库", "Ad Library")}</span>
+            </div>
+            {adDetectorConfig ? (
+              <div className="sample-card">
+                <div className="pattern-meta">
+                  <span>{t("状态", "Status")}：{adDetectorConfig.enabled ? t("开启", "Enabled") : t("关闭", "Disabled")}</span>
+                  <span>{t("广告阈值", "Ad threshold")}：{adDetectorConfig.threshold}%</span>
+                  <span>{t("最近更新", "Updated")}：{formatDateTime(adDetectorConfig.updatedAt, locale)}</span>
+                </div>
+                <div className="field-grid">
+                  <label>
+                    {t("识别阈值", "Detection threshold")}
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={adDetectorConfig.threshold}
+                      onChange={(event) =>
+                        setAdDetectorConfig((prev) =>
+                          prev
+                            ? { ...prev, threshold: Math.max(0, Math.min(100, Number(event.target.value || 0))) }
+                            : prev,
+                        )
+                      }
+                    />
+                  </label>
+                  <label className="checkbox-field">
+                    <span>{t("启用广告识别", "Enable ad detector")}</span>
+                    <input
+                      type="checkbox"
+                      checked={adDetectorConfig.enabled}
+                      onChange={(event) =>
+                        setAdDetectorConfig((prev) => (prev ? { ...prev, enabled: event.target.checked } : prev))
+                      }
+                    />
+                  </label>
+                </div>
+                <div className="action-row">
+                  <button className="secondary-btn" onClick={() => setAdPromptEditor("system")} type="button">
+                    {t("编辑 System Prompt", "Edit System Prompt")}
+                  </button>
+                  <button className="secondary-btn" onClick={() => setAdPromptEditor("user")} type="button">
+                    {t("编辑 User Prompt", "Edit User Prompt")}
+                  </button>
+                  <button onClick={() => void handleSaveAdDetectorConfig()} type="button" disabled={loading}>
+                    {t("保存广告识别器配置", "Save Ad Detector Config")}
+                  </button>
+                </div>
+                {adPromptEditor === "system" ? (
+                  <label>
+                    System Prompt
+                    <textarea
+                      rows={8}
+                      value={adDetectorConfig.systemPrompt}
+                      onChange={(event) =>
+                        setAdDetectorConfig((prev) => (prev ? { ...prev, systemPrompt: event.target.value } : prev))
+                      }
+                    />
+                  </label>
+                ) : null}
+                {adPromptEditor === "user" ? (
+                  <label>
+                    User Prompt
+                    <textarea
+                      rows={10}
+                      value={adDetectorConfig.userPrompt}
+                      onChange={(event) =>
+                        setAdDetectorConfig((prev) => (prev ? { ...prev, userPrompt: event.target.value } : prev))
+                      }
+                    />
+                  </label>
+                ) : null}
+              </div>
+            ) : null}
+            <div className="table-list">
+              {adLibraryItems.slice(0, 6).map((item) => (
+                <div className="sample-card" key={item.id}>
+                  <strong>{item.title}</strong>
+                  <div className="pattern-meta">
+                    <span>{t("广告意愿度", "Commercial intent")}：{item.commercialIntentScore}%</span>
+                    <span>{t("类型", "Type")}：{item.adType || "--"}</span>
+                    <span>{formatPublishDate(item.publishTime)}</span>
+                  </div>
+                  <div className="pattern-meta">
+                    <span>{t("作者", "Author")}：{item.authorName || "--"}</span>
+                    <span>{t("品牌", "Brands")}：{item.brandNames.join(" · ") || "--"}</span>
+                  </div>
+                  <div className="pattern-meta">
+                    <span>{t("产品", "Products")}：{item.productNames.join(" · ") || "--"}</span>
+                    <span>{t("机构", "Institutions")}：{item.institutionNames.join(" · ") || "--"}</span>
+                  </div>
+                  <span>{item.reasoning}</span>
+                </div>
+              ))}
+              {!adLibraryItems.length ? (
+                <div className="sample-card">
+                  <strong>{t("广告库暂时为空", "Ad library is empty")}</strong>
+                  <p className="step-copy">
+                    {t("当前还没有识别出的广告样本。后面一旦命中广告，会自动沉淀到这里。", "No ad samples detected yet. Once ads are identified, they will appear here automatically.")}
+                  </p>
+                </div>
+              ) : null}
+            </div>
+          </article>
+
+          <article className="panel" id="analyze">
+            <div className="panel-head">
+              <div className="step-head">
+                <div className="step-index">5</div>
                 <div>
                   <h3>{t("分析并提炼模式", "Analyze and extract patterns")}</h3>
                   <p className="step-copy">{t("样本看起来正常后，再进行分析。分析完再提炼 Pattern，不要反过来操作。", "Only analyze after the samples look correct. Extract a pattern after analysis, not before.")}</p>
@@ -1969,7 +2312,7 @@ export default function App() {
           <article className="panel panel-wide" id="generate">
             <div className="panel-head">
               <div className="step-head">
-                <div className="step-index">5</div>
+                <div className="step-index">6</div>
                 <div>
                   <h3>{t("生成草稿", "Generate Draft")}</h3>
                   <p className="step-copy">{t("有了 Pattern 之后再生成草稿。你可以先用默认参数，先看生成结果是否成型。", "Generate the draft after a pattern exists. Start with the default inputs and inspect the output first.")}</p>
@@ -2059,6 +2402,70 @@ export default function App() {
                   <span>{generated.coverCopy}</span>
                   <span>{generated.generationNotes}</span>
                 </div>
+                {generated.imageSuggestions.length ? (
+                  <div className="image-suggestion-section">
+                    <div className="panel-head inline-head">
+                      <strong>{t("配图建议", "Image Suggestions")}</strong>
+                      <span className="pill">
+                        {generated.imageSuggestions.length} {t("张建议图", "suggested images")}
+                      </span>
+                    </div>
+                    <div className="table-list">
+                      {generated.imageSuggestions.map((suggestion) => {
+                        const asset = generated.imageAssets.find((item) => item.suggestionId === suggestion.id) || null;
+                        return (
+                          <div className="sample-card image-suggestion-card" key={suggestion.id}>
+                            <div className="pattern-meta">
+                              <strong>
+                                {locale === "zh" ? `第 ${suggestion.order} 张` : `Image ${suggestion.order}`}
+                                {suggestion.title ? ` · ${suggestion.title}` : ""}
+                              </strong>
+                              <span>{suggestion.aspectRatio} · {formatStatus(suggestion.visualStyle, locale)}</span>
+                            </div>
+                            <p className="sample-summary">{suggestion.description}</p>
+                            <label>
+                              {t("AI 图片提示词", "AI image prompt")}
+                              <textarea rows={5} value={suggestion.prompt} readOnly />
+                            </label>
+                            {asset?.localPath ? (
+                              <img
+                                className="generated-image-preview"
+                                src={asset.localPath}
+                                alt={suggestion.title || `Suggestion ${suggestion.order}`}
+                              />
+                            ) : asset?.imageUrl ? (
+                              <img
+                                className="generated-image-preview"
+                                src={asset.imageUrl}
+                                alt={suggestion.title || `Suggestion ${suggestion.order}`}
+                              />
+                            ) : null}
+                            <div className="pattern-meta">
+                              <span>
+                                {asset
+                                  ? asset.status === "ready"
+                                    ? t("图片已生成", "Image ready")
+                                    : t("图片生成失败", "Image generation failed")
+                                  : t("尚未生成图片", "Image not generated yet")}
+                              </span>
+                              {asset?.errorMessage ? <span>{asset.errorMessage}</span> : null}
+                            </div>
+                            <div className="action-row">
+                              <button
+                                className="secondary-btn"
+                                disabled={loading}
+                                onClick={() => void handleGenerateImage(suggestion.id)}
+                                type="button"
+                              >
+                                {asset ? t("重新生成 AI 图片", "Regenerate AI Image") : t("生成 AI 图片", "Generate AI Image")}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
                 {generated.fallbackReason ? <span className="status-note">fallback: {generated.fallbackReason}</span> : null}
               </div>
             ) : (

@@ -14,6 +14,7 @@ import {
 } from "./collector.types";
 import { PrismaService } from "../prisma.service";
 import { XiaohongshuManagedCollector } from "./managed.collector";
+import { AdDetectorService } from "../ad-detector/ad-detector.service";
 
 const toSortableTime = (value: unknown) => {
   if (value instanceof Date) {
@@ -37,6 +38,7 @@ export class CollectService implements OnModuleInit {
     private readonly store: ViralLabStoreService,
     private readonly authService: AuthService,
     private readonly prisma: PrismaService,
+    private readonly adDetectorService: AdDetectorService,
   ) {}
 
   async onModuleInit() {
@@ -620,6 +622,10 @@ export class CollectService implements OnModuleInit {
       });
 
       const currentMetadata = this.parseMetadata(job.metadataJson);
+      const adDetectorConfig = await this.adDetectorService.getConfig(job.userId);
+      const expandedTargetCount = adDetectorConfig.enabled
+        ? Math.min(Math.max(job.targetCount * 3, job.targetCount + 6), 30)
+        : job.targetCount;
       const provider = this.getCollectorProvider({
         collectorMode: job.collectorMode,
         providerId: typeof currentMetadata?.provider === "string" ? (currentMetadata.provider as CollectorProviderId) : undefined,
@@ -630,7 +636,7 @@ export class CollectService implements OnModuleInit {
           sortBy: job.sortBy,
           noteType: job.noteType,
           publishWindow: job.publishWindow,
-          targetCount: job.targetCount,
+          targetCount: expandedTargetCount,
           manualSearchPageUrl:
             typeof currentMetadata?.manualSearchPageUrl === "string" ? currentMetadata.manualSearchPageUrl : undefined,
           manualSearchRequestData:
@@ -670,7 +676,28 @@ export class CollectService implements OnModuleInit {
       );
 
       const timestamp = this.getTimestamp();
-      const createdSamples = result.samples.map((sample) => this.buildSample(job, timestamp, sample));
+      const candidateSamples = result.samples.map((sample) => this.buildSample(job, timestamp, sample));
+      const acceptedSamples: ViralLabSample[] = [];
+      let rejectedAds = 0;
+
+      for (const sample of candidateSamples) {
+        const adDecision = await this.adDetectorService.detectSample(job.userId, sample);
+        if (adDecision.run.isAd) {
+          rejectedAds += 1;
+          continue;
+        }
+        acceptedSamples.push({
+          ...sample,
+          adDecisionStatus: "accepted",
+          adConfidence: adDecision.run.commercialIntentScore,
+          adDetectorRunId: adDecision.run.id,
+        });
+        if (acceptedSamples.length >= job.targetCount) {
+          break;
+        }
+      }
+
+      const createdSamples = acceptedSamples;
 
       if (this.prisma.isEnabled() && createdSamples.length) {
         await this.prisma.contentSample.createMany({
@@ -699,6 +726,9 @@ export class CollectService implements OnModuleInit {
             coverImageUrl: sample.coverImageUrl,
             mediaImageUrlsJson: JSON.stringify(sample.mediaImageUrls || []),
             mediaVideoUrlsJson: JSON.stringify(sample.mediaVideoUrls || []),
+            adDecisionStatus: sample.adDecisionStatus || null,
+            adConfidence: typeof sample.adConfidence === "number" ? sample.adConfidence : null,
+            adDetectorRunId: sample.adDetectorRunId || null,
             status: sample.status,
             createdAt: new Date(sample.createdAt),
             updatedAt: new Date(sample.updatedAt),
@@ -713,7 +743,14 @@ export class CollectService implements OnModuleInit {
         current.progress = result.status === "completed" ? 100 : result.progress;
         current.finishedAt = result.status === "completed" || result.status === "failed" ? timestamp : null;
         current.errorMessage = result.errorMessage || null;
-        current.metadataJson = JSON.stringify(result.metadata);
+        current.metadataJson = JSON.stringify({
+          ...(result.metadata || {}),
+          requestedCandidateCount: expandedTargetCount,
+          acceptedSampleCount: createdSamples.length,
+          rejectedAdCount: rejectedAds,
+          adThreshold: adDetectorConfig.threshold,
+          adDetectorEnabled: adDetectorConfig.enabled,
+        });
         current.updatedAt = timestamp;
         return current;
       });
@@ -729,6 +766,7 @@ export class CollectService implements OnModuleInit {
           collectorMode: job.collectorMode,
           status: result.status,
           createdSamples: createdSamples.length,
+          rejectedAds,
           reason: result.metadata?.reason || null,
         }),
         createdAt: timestamp,

@@ -10,8 +10,9 @@ import { GenerateModule } from "./generate/generate.module";
 import { PlatformModule } from "./platform/platform.module";
 import { DatabaseModule } from "./database/database.module";
 import { WorkflowModule } from "./workflow/workflow.module";
+import { AdDetectorModule } from "./ad-detector/ad-detector.module";
 
 @Module({
-  imports: [DatabaseModule, HealthModule, OverviewModule, AuthModule, PlatformModule, CollectModule, SamplesModule, AnalyzeModule, PatternsModule, GenerateModule, WorkflowModule],
+  imports: [DatabaseModule, HealthModule, OverviewModule, AuthModule, PlatformModule, CollectModule, SamplesModule, AdDetectorModule, AnalyzeModule, PatternsModule, GenerateModule, WorkflowModule],
 })
 export class AppModule {}

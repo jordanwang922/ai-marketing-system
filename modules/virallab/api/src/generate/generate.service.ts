@@ -1,8 +1,17 @@
-import { Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable } from "@nestjs/common";
 import { ViralLabStoreService } from "../store/store.service";
-import { ViralLabGeneratedContent, ViralLabGenerationJob } from "../store/types";
+import {
+  ViralLabGeneratedContent,
+  ViralLabGeneratedImageAsset,
+  ViralLabGenerationJob,
+  ViralLabImageSuggestion,
+} from "../store/types";
 import { ViralLabLlmService } from "../llm/llm.service";
 import { PrismaService } from "../prisma.service";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+
+const IMAGE_OUTPUT_DIR = path.resolve(process.cwd(), "output", "virallab-images");
 
 @Injectable()
 export class GenerateService {
@@ -115,6 +124,8 @@ export class GenerateService {
           coverCopy: content.coverCopy,
           tagsJson: JSON.stringify(content.tags || []),
           generationNotes: content.generationNotes,
+          imageSuggestionsJson: JSON.stringify(content.imageSuggestions || []),
+          imageAssetsJson: JSON.stringify(content.imageAssets || []),
           modelName: content.modelName,
           promptVersion: content.promptVersion,
           fallbackStatus: content.fallbackStatus,
@@ -190,6 +201,87 @@ export class GenerateService {
     };
   }
 
+  async generateImageForSuggestion(contentId: string, suggestionId: string) {
+    const content = await this.getRawContent(contentId);
+    if (!content) {
+      throw new BadRequestException("Generated content not found.");
+    }
+
+    const suggestion = content.imageSuggestions.find((item) => item.id === suggestionId);
+    if (!suggestion) {
+      throw new BadRequestException("Image suggestion not found.");
+    }
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new BadRequestException(
+        "OPENAI_API_KEY missing. Configure the OpenAI image API key before generating AI images.",
+      );
+    }
+
+    await fs.mkdir(IMAGE_OUTPUT_DIR, { recursive: true });
+
+    const response = await fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-image-1",
+        prompt: suggestion.prompt,
+        size: suggestion.aspectRatio === "1:1" ? "1024x1024" : "1024x1536",
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new BadRequestException(`Image generation failed: ${response.status} ${text.slice(0, 300)}`);
+    }
+
+    const payload = (await response.json()) as { data?: Array<{ b64_json?: string; url?: string }> };
+    const first = payload.data?.[0];
+    if (!first?.b64_json && !first?.url) {
+      throw new BadRequestException("Image generation returned no image payload.");
+    }
+
+    const timestamp = new Date().toISOString();
+    const asset: ViralLabGeneratedImageAsset = {
+      id: this.store.createId("imgasset"),
+      suggestionId,
+      status: "ready",
+      prompt: suggestion.prompt,
+      imageUrl: first?.url || null,
+      localPath: null,
+      errorMessage: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+
+    if (first?.b64_json) {
+      const filePath = path.join(IMAGE_OUTPUT_DIR, `${asset.id}.png`);
+      await fs.writeFile(filePath, Buffer.from(first.b64_json, "base64"));
+      asset.localPath = filePath;
+    }
+
+    const nextContent: ViralLabGeneratedContent = {
+      ...content,
+      imageAssets: [
+        ...content.imageAssets.filter((item) => item.suggestionId !== suggestionId),
+        asset,
+      ],
+      updatedAt: timestamp,
+    };
+
+    await this.persistGeneratedContentUpdate(nextContent);
+
+    return {
+      success: true,
+      item: nextContent,
+      asset,
+    };
+  }
+
   private async buildContent(
     job: ViralLabGenerationJob,
     pattern: {
@@ -217,12 +309,19 @@ export class GenerateService {
         coverCopy?: string;
         tags?: string[];
         generationNotes?: string;
+        imageSuggestions?: Array<{
+          title?: string;
+          description?: string;
+          prompt?: string;
+          visualStyle?: "photo-realistic" | "editorial" | "clean-illustration" | "hybrid";
+          aspectRatio?: "3:4" | "1:1";
+        }>;
       }>({
         messages: [
           {
             role: "system",
             content:
-              "你是 ViralLab 的小红书内容生成引擎。请只返回 JSON，不要加解释。输出字段必须包含：titleCandidates, bodyText, coverCopy, tags, generationNotes。要求内容可直接作为图文草稿二次编辑。",
+              "你是 ViralLab 的小红书内容生成引擎。请只返回 JSON，不要加解释。输出字段必须包含：titleCandidates, bodyText, coverCopy, tags, generationNotes, imageSuggestions。imageSuggestions 是数组，每项必须包含 title, description, prompt, visualStyle, aspectRatio。prompt 必须足够详细，可直接用于 AI 生图，且适合小红书图文配图。",
           },
           {
             role: "user",
@@ -267,6 +366,8 @@ export class GenerateService {
         coverCopy: this.pickString(response.coverCopy, fallback.coverCopy),
         tags: this.normalizeTags(response.tags, fallback.tags),
         generationNotes: this.pickString(response.generationNotes, fallback.generationNotes),
+        imageSuggestions: this.normalizeImageSuggestions(response.imageSuggestions, timestamp, job, pattern),
+        imageAssets: [],
         modelName: this.llm.getConfig().model || "doubao-ark",
         promptVersion: "generate.v2.llm",
         fallbackStatus: "llm",
@@ -312,6 +413,8 @@ export class GenerateService {
       generationNotes: pattern
         ? `基于 Pattern《${pattern.name}》生成，适合做方法论型图文内容。`
         : "未指定 Pattern，按通用方法论模板生成。",
+      imageSuggestions: this.buildLocalImageSuggestions(job, pattern, timestamp),
+      imageAssets: [],
       modelName: "mvp-local-generator",
       promptVersion: "generate.v1",
       fallbackStatus: "local-only",
@@ -342,6 +445,74 @@ export class GenerateService {
     return Array.from(new Set(tags)).slice(0, 8);
   }
 
+  private normalizeImageSuggestions(
+    value: unknown,
+    timestamp: string,
+    job: ViralLabGenerationJob,
+    pattern: { name: string; description: string; emotionalCore: string } | null,
+  ) {
+    if (!Array.isArray(value) || !value.length) {
+      return this.buildLocalImageSuggestions(job, pattern, timestamp);
+    }
+
+    return value.map((item, index) => this.normalizeImageSuggestion(item, index));
+  }
+
+  private normalizeImageSuggestion(value: unknown, index: number): ViralLabImageSuggestion {
+    const item = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+    return {
+      id: this.store.createId("imgprompt"),
+      order: index + 1,
+      title: String(item.title || `配图 ${index + 1}`),
+      description: String(item.description || ""),
+      prompt: String(item.prompt || item.description || ""),
+      visualStyle:
+        item.visualStyle === "editorial" ||
+        item.visualStyle === "clean-illustration" ||
+        item.visualStyle === "hybrid" ||
+        item.visualStyle === "photo-realistic"
+          ? item.visualStyle
+          : "photo-realistic",
+      aspectRatio: item.aspectRatio === "1:1" ? "1:1" : "3:4",
+    };
+  }
+
+  private buildLocalImageSuggestions(
+    job: ViralLabGenerationJob,
+    pattern: { name: string; description?: string; emotionalCore?: string } | null,
+    _timestamp: string,
+  ): ViralLabImageSuggestion[] {
+    return [
+      {
+        id: this.store.createId("imgprompt"),
+        order: 1,
+        title: "封面主图",
+        description: "作为首图，突出核心标题和人群痛点。",
+        prompt: `为小红书图文生成一张高质感封面图，主题是“${job.topic}”，面向${job.targetAudience}，语气${job.tone}，照片级真实感，人物或真实场景，标题可读性强，留出叠字空间，不要卡通，不要夸张二次元风格。`,
+        visualStyle: "photo-realistic",
+        aspectRatio: "3:4",
+      },
+      {
+        id: this.store.createId("imgprompt"),
+        order: 2,
+        title: "方法拆解图",
+        description: "用一张信息层级明确的配图承接正文的核心方法。",
+        prompt: `为小红书图文生成一张内容拆解配图，围绕“${job.topic}”，强调${pattern?.description || "可执行的方法论"}，编辑风、真实学习场景、桌面道具、人物动作自然、画面简洁高级，适合叠加要点文案。`,
+        visualStyle: "editorial",
+        aspectRatio: "3:4",
+      },
+      {
+        id: this.store.createId("imgprompt"),
+        order: 3,
+        title: "收尾行动图",
+        description: "作为结尾图，强化执行感和可复制感。",
+        prompt: `为小红书图文生成一张收尾配图，主题“${job.topic}”，表达${pattern?.emotionalCore || "能立刻执行"}，真实拍摄感，干净背景，自然光，偏教育内容运营风格，不要卡通，适合做最后一页的行动建议图。`,
+        visualStyle: "photo-realistic",
+        aspectRatio: "3:4",
+      },
+    ];
+  }
+
   private parseJsonArray(value: string | null) {
     if (!value) return [];
     try {
@@ -350,6 +521,69 @@ export class GenerateService {
     } catch {
       return [];
     }
+  }
+
+  private parseImageSuggestions(value: string | null): ViralLabImageSuggestion[] {
+    if (!value) return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.map((item, index) => this.normalizeImageSuggestion(item, index)) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private parseImageAssets(value: string | null): ViralLabGeneratedImageAsset[] {
+    if (!value) return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed)
+        ? parsed.map((item) => ({
+            id: String(item.id || ""),
+            suggestionId: String(item.suggestionId || ""),
+            status: item.status === "failed" ? "failed" : "ready",
+            prompt: String(item.prompt || ""),
+            imageUrl: item.imageUrl ? String(item.imageUrl) : null,
+            localPath: item.localPath ? String(item.localPath) : null,
+            errorMessage: item.errorMessage ? String(item.errorMessage) : null,
+            createdAt: String(item.createdAt || new Date().toISOString()),
+            updatedAt: String(item.updatedAt || new Date().toISOString()),
+          }))
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private async getRawContent(contentId: string) {
+    if (this.prisma.isEnabled()) {
+      const item = await this.prisma.generatedContent.findUnique({ where: { id: contentId } });
+      return item ? this.mapGeneratedContent(item) : null;
+    }
+
+    const db = await this.store.read();
+    return db.generatedContents.find((item) => item.id === contentId) || null;
+  }
+
+  private async persistGeneratedContentUpdate(content: ViralLabGeneratedContent) {
+    if (this.prisma.isEnabled()) {
+      await this.prisma.generatedContent.update({
+        where: { id: content.id },
+        data: {
+          imageSuggestionsJson: JSON.stringify(content.imageSuggestions || []),
+          imageAssetsJson: JSON.stringify(content.imageAssets || []),
+          updatedAt: new Date(content.updatedAt),
+        },
+      });
+    }
+
+    await this.store.mutate((db) => {
+      const existing = db.generatedContents.find((item) => item.id === content.id);
+      if (existing) {
+        Object.assign(existing, content);
+      }
+      return null;
+    });
   }
 
   private mapGeneratedContent(item: {
@@ -363,6 +597,8 @@ export class GenerateService {
     coverCopy: string | null;
     tagsJson: string | null;
     generationNotes: string | null;
+    imageSuggestionsJson: string | null;
+    imageAssetsJson: string | null;
     modelName: string | null;
     promptVersion: string | null;
     fallbackStatus: string | null;
@@ -382,6 +618,8 @@ export class GenerateService {
       coverCopy: item.coverCopy || "",
       tags: this.parseJsonArray(item.tagsJson),
       generationNotes: item.generationNotes || "",
+      imageSuggestions: this.parseImageSuggestions(item.imageSuggestionsJson),
+      imageAssets: this.parseImageAssets(item.imageAssetsJson),
       modelName: item.modelName || "mvp-local-generator",
       promptVersion: item.promptVersion || "generate.v1",
       fallbackStatus: (item.fallbackStatus as ViralLabGeneratedContent["fallbackStatus"]) || "local-only",

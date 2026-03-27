@@ -8,7 +8,8 @@ const loadEnvironment = () => {
   const candidates = [
     path.resolve(__dirname, "../.env"),
     path.resolve(process.cwd(), ".env"),
-    path.resolve(process.cwd(), "../../RiskRadar/server/.env"),
+    path.resolve(process.cwd(), "modules/RiskRadar/server/.env"),
+    path.resolve(__dirname, "../../../RiskRadar/server/.env"),
   ];
 
   for (const file of candidates) {

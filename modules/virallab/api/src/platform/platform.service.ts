@@ -260,8 +260,7 @@ export class PlatformService implements OnModuleDestroy {
       args: ["--new-window"],
     });
     const page = context.pages()[0] || (await context.newPage());
-    const keyword = String(payload.keyword || "AI教育").trim() || "AI教育";
-    const entryUrl = `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(keyword)}&source=web_explore_feed`;
+    const entryUrl = "https://www.xiaohongshu.com/";
     page.on("request", (request) => {
       if (!request.url().includes("/api/sns/web/v1/search/notes")) return;
       const raw = request.postData();
@@ -318,52 +317,64 @@ export class PlatformService implements OnModuleDestroy {
       };
     }
 
-    const cookies = await session.context.cookies([
-      "https://www.xiaohongshu.com",
-      "https://edith.xiaohongshu.com",
-    ]);
-    const cookieBlob = this.serializeCookies(cookies);
-    const visibleUrl = session.page.url();
-    const manualSearchRequestData = session.latestSearchNotesRequestJson
-      ? (() => {
-          try {
-            return JSON.parse(session.latestSearchNotesRequestJson) as Record<string, unknown>;
-          } catch {
-            return null;
-          }
-        })()
-      : null;
-    if (!cookieBlob || !cookieBlob.includes("web_session")) {
+    try {
+      const cookies = await session.context.cookies([
+        "https://www.xiaohongshu.com",
+        "https://edith.xiaohongshu.com",
+      ]);
+      const cookieBlob = this.serializeCookies(cookies);
+      const visibleUrl = session.page.url();
+      const manualSearchRequestData = session.latestSearchNotesRequestJson
+        ? (() => {
+            try {
+              return JSON.parse(session.latestSearchNotesRequestJson) as Record<string, unknown>;
+            } catch {
+              return null;
+            }
+          })()
+        : null;
+      if (!cookieBlob || !cookieBlob.includes("web_session")) {
+        return {
+          success: false,
+          verified: false,
+          errorMessage: "Login appears incomplete. Please finish scanning and make sure Xiaohongshu is fully logged in before clicking complete.",
+          item: null,
+          metadata: {
+            visibleUrl,
+          },
+        };
+      }
+
+      const saved = await this.saveXiaohongshuCookie({
+        token: payload.token,
+        accountName: payload.accountName || session.accountName,
+        cookieBlob,
+      });
+      return {
+        success: true,
+        verified: true,
+        errorMessage: null,
+        metadata: {
+          visibleUrl,
+          cookieCaptured: true,
+          manualCapture: {
+            manualSearchPageUrl: visibleUrl,
+            manualSearchRequestData,
+          },
+        },
+        item: saved.item,
+      };
+    } catch (error) {
       return {
         success: false,
         verified: false,
-        errorMessage: "Login appears incomplete. Please finish scanning and make sure Xiaohongshu is fully logged in before clicking complete.",
+        errorMessage:
+          error instanceof Error
+            ? `Unable to capture the current Xiaohongshu page: ${error.message}`
+            : "Unable to capture the current Xiaohongshu page.",
         item: null,
-        metadata: {
-          visibleUrl,
-        },
       };
     }
-
-    const saved = await this.saveXiaohongshuCookie({
-      token: payload.token,
-      accountName: payload.accountName || session.accountName,
-      cookieBlob,
-    });
-    return {
-      success: true,
-      verified: true,
-      errorMessage: null,
-      metadata: {
-        visibleUrl,
-        cookieCaptured: true,
-        manualCapture: {
-          manualSearchPageUrl: visibleUrl,
-          manualSearchRequestData,
-        },
-      },
-      item: saved.item,
-    };
   }
 
   async cancelXiaohongshuScanLogin(payload: { sessionId?: string }) {

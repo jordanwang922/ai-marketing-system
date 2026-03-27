@@ -4,17 +4,26 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import * as bcrypt from "bcryptjs";
 import {
+  ViralLabAdDetectorConfig,
+  ViralLabAdDetectorRun,
+  ViralLabAdLibraryItem,
   ViralLabAnalysis,
   ViralLabCollectionJob,
   ViralLabDatabase,
   ViralLabGeneratedContent,
   ViralLabGenerationJob,
+  ViralLabGeneratedImageAsset,
+  ViralLabImageSuggestion,
   ViralLabPattern,
   ViralLabPlatformAccount,
   ViralLabSample,
   ViralLabUser,
 } from "./types";
 import { PrismaService } from "../prisma.service";
+import {
+  DEFAULT_AD_DETECTOR_SYSTEM_PROMPT,
+  DEFAULT_AD_DETECTOR_USER_PROMPT,
+} from "../ad-detector/ad-detector.defaults";
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const DATA_FILE = path.join(DATA_DIR, "virallab-mvp.json");
@@ -29,6 +38,19 @@ const parseJsonArray = (value: string | null | undefined): string[] => {
   try {
     const parsed = JSON.parse(value);
     return Array.isArray(parsed) ? parsed.map((item) => String(item)) : [];
+  } catch {
+    return [];
+  }
+};
+
+const parseJsonValueArray = <T = unknown>(value: string | null | undefined): T[] => {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
   } catch {
     return [];
   }
@@ -72,6 +94,20 @@ const createDemoUser = async (): Promise<ViralLabUser> => {
   };
 };
 
+const createDefaultAdDetectorConfig = (userId: string): ViralLabAdDetectorConfig => {
+  const timestamp = now();
+  return {
+    id: "adcfg_default",
+    userId,
+    enabled: true,
+    threshold: 80,
+    systemPrompt: DEFAULT_AD_DETECTOR_SYSTEM_PROMPT,
+    userPrompt: DEFAULT_AD_DETECTOR_USER_PROMPT,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+};
+
 const normalizePlatformAccounts = (accounts: ViralLabDatabase["platformAccounts"] = []) =>
   accounts.map((item) => ({
     ...item,
@@ -95,9 +131,45 @@ const normalizePatterns = (patterns: ViralLabDatabase["patterns"] = []) =>
     fallbackReason: item.fallbackReason ?? null,
   }));
 
-const normalizeGeneratedContents = (contents: ViralLabDatabase["generatedContents"] = []) =>
-  contents.map((item) => ({
+const normalizeGeneratedContents = (
+  contents: ViralLabDatabase["generatedContents"] = [],
+): ViralLabDatabase["generatedContents"] =>
+  contents.map((item): ViralLabGeneratedContent => ({
     ...item,
+    imageSuggestions: Array.isArray(item.imageSuggestions)
+      ? item.imageSuggestions.map(
+          (suggestion): ViralLabImageSuggestion => ({
+            id: String(suggestion.id || ""),
+            order: Number(suggestion.order || 0),
+            title: String(suggestion.title || ""),
+            description: String(suggestion.description || ""),
+            prompt: String(suggestion.prompt || ""),
+            visualStyle:
+              suggestion.visualStyle === "photo-realistic" ||
+              suggestion.visualStyle === "editorial" ||
+              suggestion.visualStyle === "clean-illustration" ||
+              suggestion.visualStyle === "hybrid"
+                ? suggestion.visualStyle
+                : "photo-realistic",
+            aspectRatio: suggestion.aspectRatio === "1:1" ? "1:1" : "3:4",
+          }),
+        )
+      : [],
+    imageAssets: Array.isArray(item.imageAssets)
+      ? item.imageAssets.map(
+          (asset): ViralLabGeneratedImageAsset => ({
+            id: String(asset.id || ""),
+            suggestionId: String(asset.suggestionId || ""),
+            status: asset.status === "failed" ? "failed" : "ready",
+            prompt: String(asset.prompt || ""),
+            imageUrl: asset.imageUrl ? String(asset.imageUrl) : null,
+            localPath: asset.localPath ? String(asset.localPath) : null,
+            errorMessage: asset.errorMessage ? String(asset.errorMessage) : null,
+            createdAt: String(asset.createdAt || now()),
+            updatedAt: String(asset.updatedAt || now()),
+          }),
+        )
+      : [],
     fallbackStatus: item.fallbackStatus ?? (item.modelName === "mvp-local-generator" ? "local-only" : "llm"),
     fallbackReason: item.fallbackReason ?? null,
   }));
@@ -126,6 +198,59 @@ const normalizeSamples = (samples: ViralLabDatabase["samples"] = []) =>
     frameOcrTexts: Array.isArray(item.frameOcrTexts) ? item.frameOcrTexts.map((value) => String(value)) : [],
     resolvedContentText: item.resolvedContentText ?? item.contentText ?? "",
     resolvedContentSource: item.resolvedContentSource ?? "note-body",
+    adDecisionStatus: item.adDecisionStatus ?? "accepted",
+    adConfidence: typeof item.adConfidence === "number" ? item.adConfidence : 0,
+    adDetectorRunId: item.adDetectorRunId ?? null,
+  }));
+
+const normalizeAdDetectorConfigs = (items: ViralLabDatabase["adDetectorConfigs"] = [], users: ViralLabDatabase["users"] = []) => {
+  const fallbackUserId = users[0]?.id || "user_demo";
+  if (!items.length) {
+    return [createDefaultAdDetectorConfig(fallbackUserId)];
+  }
+  return items.map((item) => ({
+    ...item,
+    enabled: typeof item.enabled === "boolean" ? item.enabled : true,
+    threshold: Number.isFinite(Number(item.threshold)) ? Math.max(0, Math.min(100, Number(item.threshold))) : 80,
+    systemPrompt: item.systemPrompt || DEFAULT_AD_DETECTOR_SYSTEM_PROMPT,
+    userPrompt: item.userPrompt || DEFAULT_AD_DETECTOR_USER_PROMPT,
+  }));
+};
+
+const normalizeAdDetectorRuns = (
+  items: ViralLabDatabase["adDetectorRuns"] = [],
+): ViralLabDatabase["adDetectorRuns"] =>
+  items.map((item): ViralLabAdDetectorRun => ({
+    ...item,
+    status: item.status === "failed" ? "failed" : "completed",
+    isAd: Boolean(item.isAd),
+    confidence: Number.isFinite(Number(item.confidence)) ? Number(item.confidence) : 0,
+    commercialIntentScore: Number.isFinite(Number(item.commercialIntentScore))
+      ? Number(item.commercialIntentScore)
+      : Number.isFinite(Number(item.confidence))
+        ? Number(item.confidence)
+        : 0,
+    adSignals: Array.isArray(item.adSignals) ? item.adSignals.map((signal) => String(signal)) : [],
+    threshold: Number.isFinite(Number(item.threshold)) ? Number(item.threshold) : 80,
+    systemPromptVersion: item.systemPromptVersion || "default-system-v1",
+    userPromptVersion: item.userPromptVersion || "default-user-v1",
+  }));
+
+const normalizeAdLibraryItems = (items: ViralLabDatabase["adLibraryItems"] = []) =>
+  items.map((item) => ({
+    ...item,
+    isAd: typeof item.isAd === "boolean" ? item.isAd : true,
+    confidence: Number.isFinite(Number(item.confidence)) ? Number(item.confidence) : 0,
+    commercialIntentScore: Number.isFinite(Number(item.commercialIntentScore))
+      ? Number(item.commercialIntentScore)
+      : Number.isFinite(Number(item.confidence))
+        ? Number(item.confidence)
+        : 0,
+    adSignals: Array.isArray(item.adSignals) ? item.adSignals.map((signal) => String(signal)) : [],
+    brandNames: Array.isArray(item.brandNames) ? item.brandNames.map((name) => String(name)) : [],
+    productNames: Array.isArray(item.productNames) ? item.productNames.map((name) => String(name)) : [],
+    institutionNames: Array.isArray(item.institutionNames) ? item.institutionNames.map((name) => String(name)) : [],
+    serviceNames: Array.isArray(item.serviceNames) ? item.serviceNames.map((name) => String(name)) : [],
   }));
 
 @Injectable()
@@ -196,6 +321,9 @@ export class ViralLabStoreService implements OnModuleInit {
         platformAccounts: [],
         collectionJobs: [],
         samples: [],
+        adDetectorConfigs: [createDefaultAdDetectorConfig(demoUser.id)],
+        adDetectorRuns: [],
+        adLibraryItems: [],
         analyses: [],
         patterns: [],
         generationJobs: [],
@@ -235,6 +363,9 @@ export class ViralLabStoreService implements OnModuleInit {
       parsed.generatedContents?.some(
         (item) => typeof item.fallbackStatus === "undefined" || typeof item.fallbackReason === "undefined",
       ) ||
+      !parsed.adDetectorConfigs ||
+      !parsed.adDetectorRuns ||
+      !parsed.adLibraryItems ||
       parsed.samples?.some(
         (item) =>
           typeof item.platformContentId === "undefined" ||
@@ -262,6 +393,9 @@ export class ViralLabStoreService implements OnModuleInit {
         platformAccounts: normalizePlatformAccounts(parsed.platformAccounts),
         collectionJobs: parsed.collectionJobs || [],
         samples: normalizeSamples(parsed.samples),
+        adDetectorConfigs: normalizeAdDetectorConfigs(parsed.adDetectorConfigs, parsed.users || []),
+        adDetectorRuns: normalizeAdDetectorRuns(parsed.adDetectorRuns),
+        adLibraryItems: normalizeAdLibraryItems(parsed.adLibraryItems),
         analyses: normalizeAnalyses(parsed.analyses),
         patterns: normalizePatterns(parsed.patterns),
         generationJobs: parsed.generationJobs || [],
@@ -280,6 +414,9 @@ export class ViralLabStoreService implements OnModuleInit {
       platformAccounts: normalizePlatformAccounts(parsed.platformAccounts),
       collectionJobs: parsed.collectionJobs || [],
       samples: normalizeSamples(parsed.samples),
+      adDetectorConfigs: normalizeAdDetectorConfigs(parsed.adDetectorConfigs, parsed.users || []),
+      adDetectorRuns: normalizeAdDetectorRuns(parsed.adDetectorRuns),
+      adLibraryItems: normalizeAdLibraryItems(parsed.adLibraryItems),
       analyses: normalizeAnalyses(parsed.analyses),
       patterns: normalizePatterns(parsed.patterns),
       generationJobs: parsed.generationJobs || [],
@@ -299,6 +436,9 @@ export class ViralLabStoreService implements OnModuleInit {
 
     await this.prisma.$transaction(async (tx) => {
       await tx.auditLog.deleteMany();
+      await tx.adLibraryItem.deleteMany();
+      await tx.adDetectorRun.deleteMany();
+      await tx.adDetectorConfig.deleteMany();
       await tx.generatedContent.deleteMany();
       await tx.generationJob.deleteMany();
       await tx.patternSource.deleteMany();
@@ -417,9 +557,76 @@ export class ViralLabStoreService implements OnModuleInit {
             coverImageUrl: sample.coverImageUrl,
             mediaImageUrlsJson: JSON.stringify(sample.mediaImageUrls || []),
             mediaVideoUrlsJson: JSON.stringify(sample.mediaVideoUrls || []),
+            adDecisionStatus: sample.adDecisionStatus || null,
+            adConfidence: typeof sample.adConfidence === "number" ? sample.adConfidence : null,
+            adDetectorRunId: sample.adDetectorRunId || null,
             status: sample.status,
             createdAt: new Date(sample.createdAt),
             updatedAt: new Date(sample.updatedAt),
+          })),
+        });
+      }
+
+      if (data.adDetectorConfigs.length) {
+        await tx.adDetectorConfig.createMany({
+          data: data.adDetectorConfigs.map((config) => ({
+            id: config.id,
+            userId: config.userId,
+            enabled: config.enabled,
+            threshold: config.threshold,
+            systemPrompt: config.systemPrompt,
+            userPrompt: config.userPrompt,
+            createdAt: new Date(config.createdAt),
+            updatedAt: new Date(config.updatedAt),
+          })),
+        });
+      }
+
+      if (data.adDetectorRuns.length) {
+        await tx.adDetectorRun.createMany({
+          data: data.adDetectorRuns.map((run) => ({
+            id: run.id,
+            userId: run.userId,
+            sampleId: run.sampleId,
+            status: run.status,
+            isAd: run.isAd,
+            confidence: run.confidence,
+            commercialIntentScore: run.commercialIntentScore,
+            adType: run.adType,
+            reasoning: run.reasoning,
+            adSignalsJson: JSON.stringify(run.adSignals || []),
+            threshold: run.threshold,
+            systemPromptVersion: run.systemPromptVersion,
+            userPromptVersion: run.userPromptVersion,
+            createdAt: new Date(run.createdAt),
+            updatedAt: new Date(run.updatedAt),
+          })),
+        });
+      }
+
+      if (data.adLibraryItems.length) {
+        await tx.adLibraryItem.createMany({
+          data: data.adLibraryItems.map((item) => ({
+            id: item.id,
+            userId: item.userId,
+            sampleId: item.sampleId,
+            detectorRunId: item.detectorRunId,
+            title: item.title,
+            authorName: item.authorName,
+            publishTime: item.publishTime ? new Date(item.publishTime) : null,
+            sourceUrl: item.sourceUrl,
+            isAd: item.isAd,
+            confidence: item.confidence,
+            commercialIntentScore: item.commercialIntentScore,
+            adType: item.adType,
+            reasoning: item.reasoning,
+            adSignalsJson: JSON.stringify(item.adSignals || []),
+            brandNamesJson: JSON.stringify(item.brandNames || []),
+            productNamesJson: JSON.stringify(item.productNames || []),
+            institutionNamesJson: JSON.stringify(item.institutionNames || []),
+            serviceNamesJson: JSON.stringify(item.serviceNames || []),
+            createdAt: new Date(item.createdAt),
+            updatedAt: new Date(item.updatedAt),
           })),
         });
       }
@@ -530,6 +737,8 @@ export class ViralLabStoreService implements OnModuleInit {
             coverCopy: content.coverCopy,
             tagsJson: JSON.stringify(content.tags || []),
             generationNotes: content.generationNotes,
+            imageSuggestionsJson: JSON.stringify(content.imageSuggestions || []),
+            imageAssetsJson: JSON.stringify(content.imageAssets || []),
             modelName: content.modelName,
             promptVersion: content.promptVersion,
             fallbackStatus: content.fallbackStatus,
@@ -571,6 +780,9 @@ export class ViralLabStoreService implements OnModuleInit {
       platformAccounts,
       collectionJobs,
       samples,
+      adDetectorConfigs,
+      adDetectorRuns,
+      adLibraryItems,
       analyses,
       patterns,
       patternSources,
@@ -583,6 +795,9 @@ export class ViralLabStoreService implements OnModuleInit {
       this.prisma.platformAccount.findMany({ orderBy: { createdAt: "asc" } }),
       this.prisma.collectionJob.findMany({ orderBy: { createdAt: "asc" } }),
       this.prisma.contentSample.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.adDetectorConfig.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.adDetectorRun.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.adLibraryItem.findMany({ orderBy: { createdAt: "asc" } }),
       this.prisma.analysisResult.findMany({ orderBy: { createdAt: "asc" } }),
       this.prisma.pattern.findMany({ orderBy: { createdAt: "asc" } }),
       this.prisma.patternSource.findMany({ orderBy: { createdAt: "asc" } }),
@@ -692,6 +907,9 @@ export class ViralLabStoreService implements OnModuleInit {
             mediaImageUrls: parseJsonArray(sample.mediaImageUrlsJson),
             mediaVideoUrls: parseJsonArray(sample.mediaVideoUrlsJson),
             hasVideoMedia: Boolean(mergedPayload.hasVideoMedia),
+            adDecisionStatus: (sample.adDecisionStatus as ViralLabSample["adDecisionStatus"]) || "accepted",
+            adConfidence: typeof sample.adConfidence === "number" ? sample.adConfidence : 0,
+            adDetectorRunId: sample.adDetectorRunId || null,
             ocrTextRaw: String(mergedPayload.ocrTextRaw || ""),
             ocrTextClean: String(mergedPayload.ocrTextClean || ""),
             transcriptText: String(mergedPayload.transcriptText || ""),
@@ -708,6 +926,71 @@ export class ViralLabStoreService implements OnModuleInit {
             updatedAt: sample.updatedAt.toISOString(),
           };
         }),
+      ),
+      adDetectorConfigs: normalizeAdDetectorConfigs(
+        adDetectorConfigs.map((config) => ({
+          id: config.id,
+          userId: config.userId,
+          enabled: config.enabled,
+          threshold: config.threshold,
+          systemPrompt: config.systemPrompt,
+          userPrompt: config.userPrompt,
+          createdAt: config.createdAt.toISOString(),
+          updatedAt: config.updatedAt.toISOString(),
+        })),
+        users.map((user) => ({
+          id: user.id,
+          email: user.email,
+          passwordHash: user.passwordHash,
+          displayName: user.displayName,
+          status: "active" as const,
+          lastLoginAt: safeIso(user.lastLoginAt),
+          createdAt: user.createdAt.toISOString(),
+          updatedAt: user.updatedAt.toISOString(),
+        })),
+      ),
+      adDetectorRuns: normalizeAdDetectorRuns(
+        adDetectorRuns.map((run) => ({
+          id: run.id,
+          userId: run.userId,
+          sampleId: run.sampleId || null,
+          status: run.status as ViralLabAdDetectorRun["status"],
+          isAd: run.isAd,
+          confidence: run.confidence,
+          commercialIntentScore: run.commercialIntentScore,
+          adType: run.adType || "",
+          reasoning: run.reasoning || "",
+          adSignals: parseJsonArray(run.adSignalsJson),
+          threshold: run.threshold,
+          systemPromptVersion: run.systemPromptVersion || "default-system-v1",
+          userPromptVersion: run.userPromptVersion || "default-user-v1",
+          createdAt: run.createdAt.toISOString(),
+          updatedAt: run.updatedAt.toISOString(),
+        })),
+      ),
+      adLibraryItems: normalizeAdLibraryItems(
+        adLibraryItems.map((item) => ({
+          id: item.id,
+          userId: item.userId,
+          sampleId: item.sampleId || null,
+          detectorRunId: item.detectorRunId,
+          title: item.title,
+          authorName: item.authorName || "",
+          publishTime: safeIso(item.publishTime) || "",
+          sourceUrl: item.sourceUrl || "",
+          isAd: item.isAd,
+          confidence: item.confidence,
+          commercialIntentScore: item.commercialIntentScore,
+          adType: item.adType || "",
+          reasoning: item.reasoning || "",
+          adSignals: parseJsonArray(item.adSignalsJson),
+          brandNames: parseJsonArray(item.brandNamesJson),
+          productNames: parseJsonArray(item.productNamesJson),
+          institutionNames: parseJsonArray(item.institutionNamesJson),
+          serviceNames: parseJsonArray(item.serviceNamesJson),
+          createdAt: item.createdAt.toISOString(),
+          updatedAt: item.updatedAt.toISOString(),
+        })),
       ),
       analyses: normalizeAnalyses(
         analyses.map((analysis) => ({
@@ -786,6 +1069,8 @@ export class ViralLabStoreService implements OnModuleInit {
           coverCopy: content.coverCopy || "",
           tags: parseJsonArray(content.tagsJson),
           generationNotes: content.generationNotes || "",
+          imageSuggestions: parseJsonValueArray<ViralLabImageSuggestion>(content.imageSuggestionsJson),
+          imageAssets: parseJsonValueArray<ViralLabGeneratedImageAsset>(content.imageAssetsJson),
           modelName: content.modelName || "mvp-local-generator",
           promptVersion: content.promptVersion || "generate.v1",
           fallbackStatus: (content.fallbackStatus as ViralLabGeneratedContent["fallbackStatus"]) || "local-only",

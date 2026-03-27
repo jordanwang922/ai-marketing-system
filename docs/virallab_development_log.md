@@ -2884,3 +2884,69 @@
 - 2026-03-27: Added worker-backed progress reporting for the Xiaohongshu Playwright collector. The worker now writes stage/progress updates to a temporary progress file, the collector bridge polls that file, and `CollectService` writes live progress metadata (`progressStage`, `progressMessage`, `extractedCount`, `targetCount`) back into the active collection job while it is still running.
 
 - 2026-03-27: Expanded image OCR triggering from multi-image posts to any weak-body image note with at least one image. This specifically addresses the case where Xiaohongshu图文正文 is mostly embedded in a single cover/long image and the old rule (`>= 2` images) skipped OCR entirely, leaving only search-card summaries in the sample list.
+
+- 2026-03-27: Refined the scan-first workflow so it no longer seeds a default `AI教育` keyword. The scan-login window now opens Xiaohongshu home by default, letting the user search and filter inside Xiaohongshu itself. Added `抓取数量` to the main scan card, made collection job `创建时间` visible in the status area and task cards, and hid historical jobs while a new scan-first run is in progress so old tasks no longer masquerade as the current run.
+
+- 2026-03-27: Strengthened scan-first failure handling in the app. If scan completion does not actually create a new collection job, the flow now moves to a visible failed state instead of silently showing stale history. The collection step explicitly tells the user that no new job has been created yet and keeps historical jobs hidden until a real new job appears.
+
+- 2026-03-27: Default scan-first target count changed from 12 to 10. Tightened the scan card layout so account name and target count fields no longer stretch full width, and normalized frontend API errors to show readable messages instead of raw JSON blobs.
+
+- 2026-03-27 16:04 修复扫码完成后被 refreshAll 短暂 500 打断的问题；改为刷新失败仅告警，不中断创建采集任务，并把 Internal server error 转成可读提示。
+
+- 2026-03-27 16:06 修复第 4 步 Analyze 降级问题：为 ViralLab API 补齐 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL，本地验证 analyze/jobs 已返回 fallbackStatus=llm、promptVersion=analyze.v3.llm。
+
+- 2026-03-27 16:50 新增广告识别器（Ad Detector）模块：
+  - 新增可配置的 `system prompt / user prompt`
+  - 新增 `threshold` 与 `commercialIntentScore`
+  - 广告样本进入独立广告库，不计入有效样本数
+  - 非广告样本继续进入正式分析链
+
+- 2026-03-27 16:52 采集链路接入广告识别：
+  - collect job 现在会先跑广告识别，再决定是否计入有效样本
+  - job metadata 新增：
+    - `acceptedSampleCount`
+    - `rejectedAdCount`
+    - `adThreshold`
+    - `adDetectorEnabled`
+
+- 2026-03-27 16:56 生成模块新增配图建议：
+  - Draft 生成结果现在包含 `imageSuggestions`
+  - 每张建议图包含：
+    - 标题
+    - 描述
+    - 详细图片提示词
+    - 风格
+    - 宽高比
+
+- 2026-03-27 16:58 新增 AI 图片生成接口：
+  - `POST /generate/contents/:contentId/images`
+  - 当前可生成图片资产并回挂到 draft
+  - 若 `OPENAI_API_KEY` 缺失，接口会返回清晰的 400 错误，而不是 500
+
+- 2026-03-27 17:02 前端新增广告识别器配置区和广告库展示：
+  - 可编辑并保存广告识别 prompt
+  - 可调节广告阈值
+  - 可查看广告样本库与商业实体
+
+- 2026-03-27 17:08 前端 Draft 区新增配图建议 UI：
+  - 展示每张建议图的详细提示词
+  - 提供 “生成 AI 图片 / 重新生成 AI 图片” 按钮
+  - 支持显示已生成图片预览
+
+- 2026-03-27 17:12 重新收口扫码区交互：
+  - 默认抓取数量保持为 10
+  - 账号名称与抓取数量输入框改为更紧凑宽度
+  - 清理扫码流程中的旧错误残留
+  - 将通用内部错误进一步映射成用户可读提示
+
+### 本轮验证
+- `modules/virallab/api` build 通过
+- `modules/virallab/app` build 通过
+- `POST /auth/login` 成功
+- `POST /platform-accounts/xiaohongshu/scan-login/start` 成功，确认打开首页 URL：
+  - `https://www.xiaohongshu.com/`
+- `GET /ad-detector/config` 成功
+- `PUT /ad-detector/config` 成功（恢复为正式默认 prompt 与 80 阈值）
+- `POST /patterns/extract` 成功，返回 LLM pattern
+- `POST /generate/jobs` 成功，返回带 `imageSuggestions` 的 draft
+- `POST /generate/contents/:contentId/images` 在缺少 `OPENAI_API_KEY` 时返回清晰的 400 提示

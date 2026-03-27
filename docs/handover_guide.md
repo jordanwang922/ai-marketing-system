@@ -393,3 +393,9 @@ This project is currently in a transition phase from "Development" to "Deploymen
     - 是否存在比 `h5/v1/note_info` 返回更完整字段的 detail API
   - 继续盘点剩余 JSON fallback 写路径，准备最终切掉 JSON 作为运行时兼容层
   - 继续补 prompt/request 级别审计日志
+- ViralLab 本轮新增重点：
+  - 广告识别器（可配置 prompt / 阈值 / 商业意图强度）
+  - 广告库（为后续竞争情报分析服务）
+  - 生成稿配图建议
+  - AI 图片生成入口
+  - 扫码区输入/错误展示收口

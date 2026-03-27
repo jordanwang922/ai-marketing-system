@@ -86,6 +86,61 @@ export type ViralLabSample = {
   resolvedContentText: string;
   resolvedContentSource: "note-body" | "image-ocr" | "video-frame-ocr" | "merged";
   status: "active";
+  adDecisionStatus?: "pending" | "accepted" | "rejected";
+  adConfidence?: number;
+  adDetectorRunId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ViralLabAdDetectorConfig = {
+  id: string;
+  userId: string;
+  enabled: boolean;
+  threshold: number;
+  systemPrompt: string;
+  userPrompt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ViralLabAdDetectorRun = {
+  id: string;
+  userId: string;
+  sampleId: string | null;
+  status: "completed" | "failed";
+  isAd: boolean;
+  confidence: number;
+  commercialIntentScore: number;
+  adType: string;
+  reasoning: string;
+  adSignals: string[];
+  threshold: number;
+  systemPromptVersion: string;
+  userPromptVersion: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ViralLabAdLibraryItem = {
+  id: string;
+  userId: string;
+  sampleId: string | null;
+  detectorRunId: string;
+  title: string;
+  authorName: string;
+  publishTime: string;
+  sourceUrl: string;
+  isAd: boolean;
+  confidence: number;
+  commercialIntentScore: number;
+  adType: string;
+  reasoning: string;
+  adSignals: string[];
+  brandNames: string[];
+  productNames: string[];
+  institutionNames: string[];
+  serviceNames: string[];
   createdAt: string;
   updatedAt: string;
 };
@@ -162,11 +217,35 @@ export type ViralLabGeneratedContent = {
   coverCopy: string;
   tags: string[];
   generationNotes: string;
+  imageSuggestions: ViralLabImageSuggestion[];
+  imageAssets: ViralLabGeneratedImageAsset[];
   modelName: string;
   promptVersion: string;
   fallbackStatus: "llm" | "local-fallback" | "local-only";
   fallbackReason: string | null;
   status: "draft";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ViralLabImageSuggestion = {
+  id: string;
+  order: number;
+  title: string;
+  description: string;
+  prompt: string;
+  visualStyle: "photo-realistic" | "editorial" | "clean-illustration" | "hybrid";
+  aspectRatio: "3:4" | "1:1";
+};
+
+export type ViralLabGeneratedImageAsset = {
+  id: string;
+  suggestionId: string;
+  status: "ready" | "failed";
+  prompt: string;
+  imageUrl: string | null;
+  localPath: string | null;
+  errorMessage: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -201,6 +280,9 @@ export type ViralLabDatabase = {
   platformAccounts: ViralLabPlatformAccount[];
   collectionJobs: ViralLabCollectionJob[];
   samples: ViralLabSample[];
+  adDetectorConfigs: ViralLabAdDetectorConfig[];
+  adDetectorRuns: ViralLabAdDetectorRun[];
+  adLibraryItems: ViralLabAdLibraryItem[];
   analyses: ViralLabAnalysis[];
   patterns: ViralLabPattern[];
   generationJobs: ViralLabGenerationJob[];

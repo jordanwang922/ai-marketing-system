@@ -28,4 +28,12 @@ export class GenerateController {
   getContent(@Param("contentId") contentId: string) {
     return this.generateService.getContent(contentId);
   }
+
+  @Post("contents/:contentId/images")
+  generateImage(
+    @Param("contentId") contentId: string,
+    @Body() body: { suggestionId: string },
+  ) {
+    return this.generateService.generateImageForSuggestion(contentId, body.suggestionId);
+  }
 }

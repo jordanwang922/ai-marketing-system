@@ -881,6 +881,23 @@ button {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
+.scan-setup-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(150px, 220px) minmax(70px, 90px);
+  align-items: end;
+}
+
+.scan-setup-grid label {
+  display: grid;
+  gap: 8px;
+  color: #325342;
+}
+
+.scan-setup-grid input {
+  width: 100%;
+}
+
 .collect-config-grid label {
   display: grid;
   gap: 8px;
@@ -890,6 +907,25 @@ button {
 .draft-card p {
   color: #42574c;
   white-space: pre-line;
+}
+
+.image-suggestion-section {
+  margin-top: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.image-suggestion-card textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.generated-image-preview {
+  width: min(280px, 100%);
+  border-radius: 18px;
+  border: 1px solid rgba(92, 121, 108, 0.18);
+  object-fit: cover;
+  box-shadow: 0 12px 30px rgba(21, 54, 40, 0.08);
 }
 
 .sample-summary {

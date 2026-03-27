@@ -97,6 +97,9 @@ model ContentSample {
   mediaVideoUrlsJson String?
   rawPayloadJson    String?
   parsedPayloadJson String?
+  adDecisionStatus  String?
+  adConfidence      Float?
+  adDetectorRunId   String?
   status            String           @default("active")
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
@@ -104,6 +107,58 @@ model ContentSample {
   user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   analyses          AnalysisResult[]
   patternSources    PatternSource[]
+}
+
+model AdDetectorConfig {
+  id          String   @id @default(cuid())
+  userId      String
+  enabled     Boolean  @default(true)
+  threshold   Int      @default(80)
+  systemPrompt String
+  userPrompt  String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model AdDetectorRun {
+  id                   String   @id @default(cuid())
+  userId               String
+  sampleId             String?
+  status               String   @default("completed")
+  isAd                 Boolean  @default(false)
+  confidence           Float    @default(0)
+  commercialIntentScore Float   @default(0)
+  adType               String?
+  reasoning            String?
+  adSignalsJson        String?
+  threshold            Int      @default(80)
+  systemPromptVersion  String?
+  userPromptVersion    String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+model AdLibraryItem {
+  id                    String   @id @default(cuid())
+  userId                String
+  sampleId              String?
+  detectorRunId         String
+  title                 String
+  authorName            String?
+  publishTime           DateTime?
+  sourceUrl             String?
+  isAd                  Boolean  @default(true)
+  confidence            Float    @default(0)
+  commercialIntentScore Float    @default(0)
+  adType                String?
+  reasoning             String?
+  adSignalsJson         String?
+  brandNamesJson        String?
+  productNamesJson      String?
+  institutionNamesJson  String?
+  serviceNamesJson      String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 }
 
 model AnalysisResult {
@@ -198,6 +253,8 @@ model GeneratedContent {
   coverCopy           String?
   tagsJson            String?
   generationNotes     String?
+  imageSuggestionsJson String?
+  imageAssetsJson     String?
   modelName           String?
   promptVersion       String?
   fallbackStatus      String?

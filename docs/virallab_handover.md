@@ -1267,3 +1267,62 @@ The frontend now has a working login flow and local token persistence. The defau
   This supports a visible progress bar and stage strip in the scan-first workflow.
 
 - 2026-03-27: Image OCR is no longer limited to posts with 2+ images. Weak-body image notes with even a single image now enter OCR, because real Xiaohongshu图文 often stores most of the正文 inside one cover/long image. This is an important quality fix for sample body extraction.
+
+- 2026-03-27: The scan-first entry flow no longer pre-fills a default keyword. The user now searches directly inside Xiaohongshu after opening the scan window, while ViralLab only retains `抓取数量` as the main input on the primary card. This better matches the intended “manual filter in Xiaohongshu, then capture the current result page” product flow.
+
+- 2026-03-27: Historical collection jobs are now hidden during an active scan-first run until a real new job is created. This prevents old failed/completed jobs from being misread as the result of the latest scan session. The UI also exposes collection-job `创建时间` more prominently to make task recency obvious.
+
+- 2026-03-27: Scan-first UI polish: default target count is now 10, the scan card inputs are compact, and frontend request errors now display as readable messages instead of raw `{statusCode:500}` payloads.
+
+- 2026-03-27 16:04 扫码流程补充：scan-login/complete 成功后即使 refreshAll 暂时失败，也继续创建 collect job；前端不再向用户暴露裸 500 JSON。
+
+- 2026-03-27 16:06 第 4 步分析报错排查结论：问题不是分析逻辑，而是 ViralLab 运行时未读到豆包配置。已把 LLM 配置补进 modules/virallab/api/.env，并重启 API；实测 analyze/jobs 重新走到豆包，前端应不再显示 LLM config missing。
+
+- 2026-03-27 17:12 广告识别器已正式进入产品主链：
+  - 位置：
+    - 样本抓取完成
+    - 广告识别
+    - 非广告进入正式样本库
+    - 广告进入广告库
+  - 识别维度：
+    - `isAd`
+    - `confidence`
+    - `commercialIntentScore`
+    - `adType`
+    - `brandNames / productNames / institutionNames / serviceNames`
+    - `adSignals`
+    - `reasoning`
+  - 用户可在前端直接配置：
+    - `System Prompt`
+    - `User Prompt`
+    - `threshold`
+  - 运营意义：
+    - 强广告可用高阈值过滤
+    - 软广可用低阈值识别
+    - 广告内容进入独立库，便于后续做竞争对手/品牌研究
+
+- 2026-03-27 17:13 配图建议与 AI 图片生成已接入 Draft：
+  - 生成稿不再只有文字
+  - 现在还会产出：
+    - `imageSuggestions`
+      - 标题
+      - 描述
+      - Prompt
+      - 风格
+      - 宽高比
+  - 前端支持：
+    - 生成 AI 图片
+    - 重新生成 AI 图片
+    - 已生成图片预览
+
+- 当前已知限制：
+  - `OPENAI_API_KEY` 尚未配置，因此 AI 图片按钮目前会返回明确的 400 提示，而不是生成真实图片
+  - 广告识别器模块已接入采集链，但要真正看到广告被过滤、广告库持续积累，仍需要继续跑更多真实样本
+
+- 本轮实测结论：
+  - 登录正常
+  - 扫码窗口启动正常，默认打开小红书首页
+  - 广告识别器配置读取正常
+  - 广告识别器配置保存正常
+  - Analyze / Pattern / Generate 链可继续跑通
+  - Generate 已能返回配图建议

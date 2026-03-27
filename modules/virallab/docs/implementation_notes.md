@@ -803,3 +803,41 @@ V1 implements the small red book workflow only:
     - at least 1 image
     - `contentText.length < 220`
   - this is intentionally broader because many Xiaohongshu “single-image” posts still place most正文 in the image itself
+
+- Ad detector implementation note:
+  - implemented under:
+    - `modules/virallab/api/src/ad-detector/`
+  - runtime flow:
+    - candidate sample collected
+    - ad detector evaluates sample
+    - ad sample is diverted to ad library
+    - non-ad sample proceeds to formal sample pipeline
+  - current configuration is user-editable via API/UI:
+    - `enabled`
+    - `threshold`
+    - `systemPrompt`
+    - `userPrompt`
+  - decision model:
+    - `isAd`
+    - `confidence`
+    - `commercialIntentScore`
+    - `adType`
+    - named entities
+    - reasons/signals
+  - practical note:
+    - `commercialIntentScore` is the more useful control surface
+    - `threshold` decides whether soft commercial content should be filtered or retained
+
+- Draft image suggestion note:
+  - generation now outputs structured `imageSuggestions`
+  - each suggestion includes:
+    - `title`
+    - `description`
+    - `prompt`
+    - `visualStyle`
+    - `aspectRatio`
+  - a separate image-generation endpoint is available:
+    - `POST /generate/contents/:contentId/images`
+  - current environment limitation:
+    - live image generation requires `OPENAI_API_KEY`
+    - if missing, API returns an explicit 400 message
