@@ -469,6 +469,7 @@ export default function App() {
   const [scanLoginStatus, setScanLoginStatus] = useState<ScanLoginStatus>("idle");
   const [scanWorkflowStage, setScanWorkflowStage] = useState<ScanWorkflowStage>("idle");
   const [activeCollectionJobId, setActiveCollectionJobId] = useState<string>("");
+  const [focusCurrentCollectionRun, setFocusCurrentCollectionRun] = useState(false);
   const [helpTab, setHelpTab] = useState<HelpTab | null>(null);
   const t = (zh: string, en: string) => (locale === "zh" ? zh : en);
 
@@ -493,8 +494,11 @@ export default function App() {
     if (activeCollectionJobId) {
       return jobs.find((item) => item.id === activeCollectionJobId) || null;
     }
+    if (focusCurrentCollectionRun) {
+      return null;
+    }
     return jobs[0] || null;
-  }, [activeCollectionJobId, jobs]);
+  }, [activeCollectionJobId, focusCurrentCollectionRun, jobs]);
   const currentJobSamples = useMemo(() => {
     if (!latestCollectionJob?.id) return [];
     return samples.filter((item) => item.jobId === latestCollectionJob.id);
@@ -979,6 +983,7 @@ export default function App() {
     setAnalyses([]);
     setPatterns([]);
     setActiveCollectionJobId("");
+    setFocusCurrentCollectionRun(false);
     setScanLoginSessionId("");
     setScanLoginStatus("idle");
     setScanWorkflowStage("idle");
@@ -994,6 +999,7 @@ export default function App() {
     });
     if (response?.jobId) {
       setActiveCollectionJobId(response.jobId);
+      setFocusCurrentCollectionRun(true);
       setScanWorkflowStage(response?.status === "pending" ? "job-pending" : "job-running");
     }
     setWorkspaceMessage(
@@ -1030,6 +1036,7 @@ export default function App() {
     }));
     setLoading(true);
     setActiveCollectionJobId("");
+    setFocusCurrentCollectionRun(true);
     setScanWorkflowStage("scan-window-open");
     setWorkspaceMessage(
       t(
@@ -1053,6 +1060,7 @@ export default function App() {
       );
     } catch (error) {
       setScanWorkflowStage("idle");
+      setFocusCurrentCollectionRun(false);
       setWorkspaceMessage(error instanceof Error ? error.message : t("打开扫码窗口失败。", "Unable to open the scan window."));
     } finally {
       setLoading(false);
@@ -1132,6 +1140,7 @@ export default function App() {
       setScanLoginSessionId("");
       setScanLoginStatus("idle");
       setScanWorkflowStage("idle");
+      setFocusCurrentCollectionRun(false);
       setWorkspaceMessage(t("已关闭本次扫码窗口。", "Closed the current scan window."));
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : t("关闭扫码窗口失败。", "Unable to close the scan window."));
