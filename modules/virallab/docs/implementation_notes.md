@@ -803,6 +803,25 @@ V1 implements the small red book workflow only:
     - at least 1 image
     - `contentText.length < 220`
   - this is intentionally broader because many Xiaohongshu “single-image” posts still place most正文 in the image itself
+  - OCR coverage is now broader:
+    - process up to the first 8 images instead of only 3
+    - merge OCR text with any existing正文 instead of bluntly replacing the body
+    - dedupe repeated lines before writing `resolvedContentText`
+
+- Video text extraction note:
+  - current V1 does not yet rely on Whisper / ASR
+  - instead it prioritizes “main visible text” extraction by:
+    - attempting muted playback in the detail page
+    - sampling several video timestamps
+    - taking OCR snapshots from the note container / media container
+    - collecting visible subtitle / overlay / caption-like DOM text
+  - merged output fields:
+    - `transcriptText`
+    - `frameOcrTexts`
+    - `resolvedContentText`
+  - practical goal of this phase:
+    - make视频先有可分析的主要文字
+    - postpone keyframe screenshot UX until a later upgrade
 
 - Ad detector implementation note:
   - implemented under:

@@ -2939,6 +2939,17 @@
   - 清理扫码流程中的旧错误残留
   - 将通用内部错误进一步映射成用户可读提示
 
+- 2026-03-27 17:20 强化长图文与视频文字提取：
+  - 长图 OCR 现在最多处理前 8 张图，不再只取前 3 张
+  - 单图弱正文图文也会进入 OCR，而不只处理多图长图文
+  - 新增统一文本去重/合并逻辑，`resolvedContentText` 会综合页面正文、OCR、视频文字、摘要
+  - 视频详情页新增多时间点帧 OCR 与可见字幕/叠加文字抓取，先完成“主要文字提取”，暂不把关键帧截图作为主产品输出
+
+- 2026-03-27 17:28 清理 API/前端运行态：
+  - 清空重复的 ViralLab API watch 进程，避免 3301 继续跑旧代码
+  - 重新启动 API 与前端 dev server，确认扫码启动接口当前返回小红书首页 `https://www.xiaohongshu.com/`
+  - 继续保持扫码区默认抓取数量为 10，并将账号名称默认值缩短为 `Jordan XHS`
+
 ### 本轮验证
 - `modules/virallab/api` build 通过
 - `modules/virallab/app` build 通过
@@ -2950,3 +2961,5 @@
 - `POST /patterns/extract` 成功，返回 LLM pattern
 - `POST /generate/jobs` 成功，返回带 `imageSuggestions` 的 draft
 - `POST /generate/contents/:contentId/images` 在缺少 `OPENAI_API_KEY` 时返回清晰的 400 提示
+- `node --check modules/virallab/worker/src/run-xiaohongshu-collector.js` 通过
+- 直接调用 `scan-login/start` 成功，确认当前 API 返回小红书首页入口

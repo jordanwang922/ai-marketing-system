@@ -1319,6 +1319,25 @@ The frontend now has a working login flow and local token persistence. The defau
   - `OPENAI_API_KEY` 尚未配置，因此 AI 图片按钮目前会返回明确的 400 提示，而不是生成真实图片
   - 广告识别器模块已接入采集链，但要真正看到广告被过滤、广告库持续积累，仍需要继续跑更多真实样本
 
+- 2026-03-27 17:28 长图文与视频文字提取进展：
+  - 长图 OCR 扩到最多前 8 张图
+  - 单图弱正文图文也会进入 OCR
+  - 视频链当前已接：
+    - 多时间点帧 OCR
+    - 可见字幕/叠加文字抓取
+    - `transcriptText / frameOcrTexts / resolvedContentText`
+  - 这条链已经能改善“只有摘要、没有正文”的问题，但仍需要用户稍后重新扫码后跑真实任务做最终验证
+
+- 2026-03-27 17:29 运行态与前端收口：
+  - 已清理重复的 ViralLab API watch 进程，避免 3301 继续服务旧代码
+  - 已重新启动前端 dev server
+  - 扫码卡默认账号名缩短为 `Jordan XHS`
+  - 扫码卡输入宽度已收紧：
+    - 账号名半宽
+    - 抓取数量窄输入
+  - 当前扫码启动接口实测返回：
+    - `entryUrl: https://www.xiaohongshu.com/`
+
 - 本轮实测结论：
   - 登录正常
   - 扫码窗口启动正常，默认打开小红书首页

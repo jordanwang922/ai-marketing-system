@@ -661,7 +661,7 @@ const runVisionOcr = async (filePaths = []) => {
 };
 
 const extractImageOcrTexts = async (imageUrls = [], prefix = "sample-image") => {
-  const targets = imageUrls.filter(Boolean).slice(0, 3);
+  const targets = imageUrls.filter(Boolean).slice(0, 8);
   const files = [];
   try {
     for (const [index, url] of targets.entries()) {
@@ -673,6 +673,21 @@ const extractImageOcrTexts = async (imageUrls = [], prefix = "sample-image") => 
   } finally {
     await Promise.all(files.map((filePath) => safeUnlink(filePath)));
   }
+};
+
+const dedupeMeaningfulLines = (value) => {
+  const lines = String(value || "")
+    .split(/\n+/)
+    .map((line) => cleanOcrText(line))
+    .filter(Boolean);
+  return lines.filter((line, index) => lines.indexOf(line) === index);
+};
+
+const mergeMeaningfulTexts = (...values) => {
+  const merged = values
+    .flatMap((value) => dedupeMeaningfulLines(value))
+    .filter(Boolean);
+  return merged.filter((line, index) => merged.indexOf(line) === index).join("\n");
 };
 
 const captureLocatorFrameOcr = async (page, selector, prefix) => {
@@ -697,11 +712,122 @@ const captureLocatorFrameOcr = async (page, selector, prefix) => {
   }
 };
 
+const captureVideoFrameOcr = async (page, prefix) => {
+  const files = [];
+  try {
+    await ensureArtifactsDir();
+    const videoLocator = page.locator(".media-container video, video").first();
+    if ((await videoLocator.count().catch(() => 0)) === 0) return [];
+
+    await videoLocator.scrollIntoViewIfNeeded().catch(() => {});
+    await page
+      .evaluate(async () => {
+        const video = document.querySelector(".media-container video, video");
+        if (!(video instanceof HTMLVideoElement)) return;
+        try {
+          video.muted = true;
+          await video.play().catch(() => {});
+        } catch {
+          // ignore play failures
+        }
+      })
+      .catch(() => {});
+
+    await delay(500);
+    const meta = await page
+      .evaluate(() => {
+        const video = document.querySelector(".media-container video, video");
+        if (!(video instanceof HTMLVideoElement)) {
+          return { duration: 0, hasVideo: false, overlayTexts: [] };
+        }
+        const overlaySelectors = [
+          "[class*='subtitle']",
+          "[class*='caption']",
+          "[class*='sub-title']",
+          ".xgplayer-texttrack",
+          ".xg-text-track",
+          ".video-desc",
+          ".note-text",
+          "#detail-desc .note-text",
+        ];
+        const overlayTexts = Array.from(document.querySelectorAll(overlaySelectors.join(",")))
+          .map((node) => String(node.textContent || "").replace(/\s+/g, " ").trim())
+          .filter(Boolean)
+          .slice(0, 20);
+        return {
+          duration: Number.isFinite(video.duration) ? video.duration : 0,
+          hasVideo: true,
+          overlayTexts,
+        };
+      })
+      .catch(() => ({ duration: 0, hasVideo: false, overlayTexts: [] }));
+
+    const timestamps = meta.duration && meta.duration > 2
+      ? [0, 0.18, 0.36, 0.58, 0.82]
+          .map((ratio) => Number((meta.duration * ratio).toFixed(2)))
+          .filter((time, index, array) => time >= 0 && array.indexOf(time) === index)
+      : [0, 0.8, 1.6];
+
+    for (let index = 0; index < timestamps.length; index += 1) {
+      const targetTime = timestamps[index];
+      await page
+        .evaluate(
+          async (nextTime) => {
+            const video = document.querySelector(".media-container video, video");
+            if (!(video instanceof HTMLVideoElement)) return;
+            const clamped =
+              Number.isFinite(video.duration) && video.duration > 0
+                ? Math.min(Math.max(0, nextTime), Math.max(0, video.duration - 0.2))
+                : Math.max(0, nextTime);
+            try {
+              video.currentTime = clamped;
+            } catch {
+              // ignore seek failures
+            }
+            await new Promise((resolve) => {
+              let settled = false;
+              const done = () => {
+                if (settled) return;
+                settled = true;
+                resolve(null);
+              };
+              video.addEventListener("seeked", done, { once: true });
+              setTimeout(done, 700);
+            });
+          },
+          targetTime,
+        )
+        .catch(() => {});
+      await delay(350);
+      const filePath = path.join(
+        ARTIFACTS_DIR,
+        `${sanitizeSegment(prefix)}-frame-${index + 1}-${Date.now()}.png`,
+      );
+      await page.locator(".media-container, #noteContainer, .note-container").first().screenshot({ path: filePath }).catch(() => {});
+      files.push(filePath);
+    }
+
+    const ocrResults = await runVisionOcr(files);
+    const ocrTexts = ocrResults.map((item) => item.text).filter(Boolean);
+    return dedupeMeaningfulLines(
+      mergeMeaningfulTexts(...ocrTexts, ...(Array.isArray(meta.overlayTexts) ? meta.overlayTexts : [])),
+    );
+  } finally {
+    await Promise.all(files.map((filePath) => safeUnlink(filePath)));
+  }
+};
+
 const finalizeResolvedContent = (sample) => {
   const resolvedContentText =
-    text(sample.resolvedContentText) ||
-    text(sample.ocrTextClean) ||
-    text(sample.transcriptText) ||
+    text(
+      mergeMeaningfulTexts(
+        sample.resolvedContentText,
+        sample.ocrTextClean,
+        sample.transcriptText,
+        sample.contentText,
+        sample.contentSummary,
+      ),
+    ) ||
     text(sample.contentText) ||
     text(sample.contentSummary);
   const resolvedContentSource =
@@ -2003,16 +2129,17 @@ const enrichSamplesFromSearchModal = async (page, samples, keyword) => {
       modalOpenCount += 1;
 
       const detail = await extractModalDetail(noteId);
-      const frameOcrTexts =
-        Array.isArray(detail.mediaVideoUrls) && detail.mediaVideoUrls.length
-          ? await captureLocatorFrameOcr(page, ".media-container, #noteContainer, .note-container", `video-${noteId}`)
-          : [];
+      const shouldExtractVideoText = sample.hasVideoMedia || detail.hasVideoElement;
+      const frameOcrTexts = shouldExtractVideoText ? await captureVideoFrameOcr(page, `video-${noteId}`) : [];
       const sameTitle =
         !text(detail.title) ||
         text(detail.title).includes(text(sample.title)) ||
         text(sample.title).includes(text(detail.title));
       const content = text(detail.content);
       const transcriptText = cleanOcrText(frameOcrTexts.join("\n"));
+      const mergedVideoText = cleanOcrText(
+        mergeMeaningfulTexts(content, transcriptText, sample.contentText, sample.contentSummary),
+      );
 
       if (!sameTitle || content.length < 20) {
         enriched.push(
@@ -2022,7 +2149,7 @@ const enrichSamplesFromSearchModal = async (page, samples, keyword) => {
             frameOcrTexts,
             transcriptText,
             transcriptSegments: transcriptText ? transcriptText.split("\n").filter(Boolean) : [],
-            resolvedContentText: text(sample.contentText) || transcriptText || text(sample.contentSummary),
+            resolvedContentText: mergedVideoText || text(sample.contentText) || transcriptText || text(sample.contentSummary),
             resolvedContentSource: transcriptText ? "video-frame-ocr" : "note-body",
           }),
         );
@@ -2052,13 +2179,20 @@ const enrichSamplesFromSearchModal = async (page, samples, keyword) => {
             8,
           ),
           coverImageUrl: sample.coverImageUrl || detail.mediaImageUrls?.[0] || "",
-          mediaImageUrls: unique([...(detail.mediaImageUrls || []), ...(sample.mediaImageUrls || [])]),
-          mediaVideoUrls: unique([...(detail.mediaVideoUrls || []), ...(sample.mediaVideoUrls || [])]),
+            mediaImageUrls: unique([...(detail.mediaImageUrls || []), ...(sample.mediaImageUrls || [])]),
+            mediaVideoUrls: unique([...(detail.mediaVideoUrls || []), ...(sample.mediaVideoUrls || [])]),
             frameOcrTexts,
             transcriptText,
             transcriptSegments: transcriptText ? transcriptText.split("\n").filter(Boolean) : [],
-            resolvedContentText: content || transcriptText,
-            resolvedContentSource: content ? "note-body" : transcriptText ? "video-frame-ocr" : "note-body",
+            resolvedContentText: mergedVideoText || content || transcriptText,
+            resolvedContentSource:
+              transcriptText && mergedVideoText !== content
+                ? "video-frame-ocr"
+                : content
+                  ? "note-body"
+                  : transcriptText
+                    ? "video-frame-ocr"
+                    : "note-body",
           }),
         );
       }
@@ -2151,7 +2285,7 @@ const enrichSamplesWithImageOcr = async (samples = []) => {
         longImageCandidate: true,
         ocrTextRaw,
         ocrTextClean,
-        resolvedContentText: ocrTextClean,
+        resolvedContentText: mergeMeaningfulTexts(draft.contentText, ocrTextClean),
         resolvedContentSource: "image-ocr",
       }),
     );

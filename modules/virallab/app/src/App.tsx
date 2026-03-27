@@ -541,7 +541,7 @@ export default function App() {
     forceReanalyze: true,
   });
   const [cookieForm, setCookieForm] = useState({
-    accountName: "Jordan Xiaohongshu",
+    accountName: "Jordan XHS",
     cookieBlob: "",
   });
   const [scanLoginSessionId, setScanLoginSessionId] = useState("");
@@ -1643,14 +1643,14 @@ export default function App() {
                 )}
               </p>
               <div className="scan-setup-grid">
-                <label>
+                <label className="scan-account-field">
                   {t("账号名称", "Account name")}
                   <input
                     value={cookieForm.accountName}
                     onChange={(event) => setCookieForm((prev) => ({ ...prev, accountName: event.target.value }))}
                   />
                 </label>
-                <label>
+                <label className="scan-count-field">
                   {t("抓取数量", "Target count")}
                   <input
                     type="number"
@@ -1704,7 +1704,7 @@ export default function App() {
                 <p className="hint-text">
                   {t("只有在扫码方式不可用时，再使用手动 Cookie。", "Use manual cookie paste only if scan login is unavailable.")}
                 </p>
-                <label>
+                <label className="scan-account-field">
                   {t("账号名称", "Account name")}
                   <input
                     value={cookieForm.accountName}
